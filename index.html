@@ -1,0 +1,48 @@
+<!doctype html>
+<html lang="ru">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1, maximum-scale=1, user-scalable=no, viewport-fit=cover" />
+    <meta name="apple-mobile-web-app-capable" content="yes" />
+    <meta name="mobile-web-app-capable" content="yes" />
+    <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent" />
+    <meta name="apple-mobile-web-app-title" content="Neon Hex" />
+    <meta name="theme-color" content="#0c0a1e" />
+    <title>Neon Hex</title>
+    <link rel="preconnect" href="https://fonts.googleapis.com" />
+    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
+    <link href="https://fonts.googleapis.com/css2?family=Pixelify+Sans:wght@400;600;700&display=swap" rel="stylesheet" />
+  </head>
+  <body>
+    <div id="stage"></div>
+
+    <div id="hud">
+      <div class="xp"><div id="xp-fill"></div></div>
+      <div class="row">
+        <span id="lvl"></span>
+        <span id="time"></span>
+        <span id="kills"></span>
+      </div>
+    </div>
+
+    <button id="dash" class="dash ready" aria-label="Рывок"><span>Рывок</span></button>
+
+    <div id="levelup" class="overlay" hidden>
+      <div class="panel">
+        <h2 class="title gold">Новый уровень</h2>
+        <p class="sub">Установи модуль</p>
+        <div id="choices"></div>
+      </div>
+    </div>
+
+    <div id="gameover" class="overlay" hidden>
+      <div class="panel">
+        <h2 class="title blood">Сигнал потерян</h2>
+        <p id="summary" class="sub"></p>
+        <button id="restart" class="primary">Играть снова</button>
+      </div>
+    </div>
+
+    <script type="module" src="./src/main.ts"></script>
+  </body>
+</html>
