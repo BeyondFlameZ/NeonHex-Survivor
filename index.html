@@ -23,14 +23,23 @@
         <span id="time"></span>
         <span id="kills"></span>
       </div>
+      <div class="slots">
+        <div id="wslots" class="slot-row"></div>
+        <div id="gslots" class="slot-row"></div>
+      </div>
     </div>
 
     <button id="dash" class="dash ready" aria-label="Рывок"><span>Рывок</span></button>
 
     <div id="levelup" class="overlay" hidden>
       <div class="panel">
-        <h2 class="title gold">Новый уровень</h2>
-        <p class="sub">Установи модуль</p>
+        <div class="panel-head">
+          <div>
+            <h2 id="lu-title" class="title gold">Новый уровень</h2>
+            <p id="lu-sub" class="sub">Выбери модуль</p>
+          </div>
+          <button id="reroll" class="reroll" hidden>Реролл</button>
+        </div>
         <div id="choices"></div>
       </div>
     </div>

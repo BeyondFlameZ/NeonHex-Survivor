@@ -320,3 +320,26 @@ export const impactFrames = () => {
   }
   return out;
 };
+
+// ---------- оружие ----------
+
+export const mineTex = () =>
+  plainTex(['.kkkk.', 'kroork', 'koyyok', 'koyyok', 'kroork', '.kkkk.'], {
+    k: '#1a0a06',
+    r: '#5c1a0a',
+    o: '#ff7a2d',
+    y: '#ffd24a',
+  });
+
+export const meteorTex = () =>
+  plainTex(['..ooo..', '.oyyyo.', 'oyWWyyo', 'oyWWyyo', 'oyyyyyo', '.oyyyo.', '..ooo..'], {
+    o: '#ff4a1a',
+    y: '#ffb03a',
+    W: '#fff3c0',
+  });
+
+export const pylonTex = () =>
+  charTex(
+    ['...t...', '..tWt..', '...t...', '..kkk..', '..kck..', '..kck..', '.kkckk.', '.kcCck.', '.kcCck.', 'kkkkkkk', '.......'],
+    { t: '#3ef0ff', W: '#ffffff', k: '#0a0818', c: '#2d4a8f', C: '#3ef0ff' },
+  );

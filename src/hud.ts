@@ -1,9 +1,23 @@
-export interface Choice {
-  id: string;
-  name: string;
-  desc: string;
+export interface Card {
+  kicker: string;
+  title: string;
+  lines: string[];
+  badge?: { text: string; css: string };
+  note?: string;
+  gold?: boolean;
+  isNew?: boolean;
+}
+
+export interface WeaponSlot {
+  tag: string;
+  css: string;
   level: number;
-  max: number;
+  evolved: boolean;
+}
+
+export interface GearSlot {
+  glyph: string;
+  filled: boolean;
 }
 
 export const fmtTime = (sec: number) =>
@@ -11,23 +25,41 @@ export const fmtTime = (sec: number) =>
 
 const $ = (id: string) => document.getElementById(id) as HTMLElement;
 
+function el(tag: string, cls: string, text?: string) {
+  const e = document.createElement(tag);
+  e.className = cls;
+  if (text !== undefined) e.textContent = text;
+  return e;
+}
+
 // DOM трогаем только при изменении значений — иначе Safari тратит кадр на layout.
 export class Hud {
   private lvl = $('lvl');
   private time = $('time');
   private kills = $('kills');
   private xpFill = $('xp-fill');
-  private levelup = $('levelup');
+  private choice = $('levelup');
+  private choiceTitle = $('lu-title');
+  private choiceSub = $('lu-sub');
   private choices = $('choices');
+  private reroll = $('reroll') as HTMLButtonElement;
+  private wslots = $('wslots');
+  private gslots = $('gslots');
   private gameover = $('gameover');
   private summary = $('summary');
   private dash = $('dash');
   private c = { lvl: -1, sec: -1, kills: -1, xp: -1, dash: -1 };
+  private onReroll: (() => void) | null = null;
 
   constructor() {
     $('restart').addEventListener('click', () => location.reload());
+    this.reroll.addEventListener('click', () => this.onReroll?.());
     window.addEventListener('keydown', (e) => {
-      if (this.levelup.hidden) return;
+      if (this.choice.hidden) return;
+      if (e.code === 'KeyR') {
+        this.onReroll?.();
+        return;
+      }
       const n = ['Digit1', 'Digit2', 'Digit3'].indexOf(e.code);
       const btn = this.choices.children[n] as HTMLButtonElement | undefined;
       if (n >= 0 && btn) btn.click();
@@ -48,6 +80,25 @@ export class Hud {
     this.c.dash = v;
     this.dash.style.setProperty('--cd', `${v * 100}%`);
     this.dash.classList.toggle('ready', v === 0);
+  }
+
+  setSlots(weapons: WeaponSlot[], gear: GearSlot[]) {
+    this.wslots.replaceChildren();
+    for (let k = 0; k < 6; k++) {
+      const w = weapons[k];
+      const box = el('div', 'slot' + (w ? ' filled' : '') + (w?.evolved ? ' evo' : ''));
+      if (w) {
+        box.style.setProperty('--c', w.css);
+        box.append(el('span', 'slot-tag', w.tag), el('span', 'slot-lv', w.evolved ? '★' : String(w.level)));
+      }
+      this.wslots.append(box);
+    }
+    this.gslots.replaceChildren();
+    for (const g of gear) {
+      const box = el('div', 'slot gear' + (g.filled ? ' filled' : ''));
+      box.append(el('span', 'slot-tag', g.glyph));
+      this.gslots.append(box);
+    }
   }
 
   update(level: number, time: number, kills: number, xpFrac: number) {
@@ -72,42 +123,47 @@ export class Hud {
     }
   }
 
-  showLevelUp(list: Choice[], onPick: (id: string) => void) {
+  showChoice(
+    title: string,
+    sub: string,
+    cards: Card[],
+    onPick: (i: number) => void,
+    reroll?: { left: number; onReroll: () => void },
+  ) {
     let picked = false;
+    this.choiceTitle.textContent = title;
+    this.choiceSub.textContent = sub;
     this.choices.replaceChildren();
-    for (const ch of list) {
-      const b = document.createElement('button');
-      b.className = 'choice';
 
-      const name = document.createElement('span');
-      name.className = 'choice-name';
-      name.textContent = ch.name;
-
-      const pips = document.createElement('span');
-      pips.className = 'pips';
-      for (let k = 0; k < ch.max; k++) {
-        const p = document.createElement('span');
-        p.className = 'pip' + (k < ch.level ? ' on' : k === ch.level ? ' next' : '');
-        pips.append(p);
+    cards.forEach((card, i) => {
+      const b = el('button', 'choice' + (card.gold ? ' gold' : '')) as HTMLButtonElement;
+      const head = el('span', 'choice-head');
+      if (card.badge) {
+        const badge = el('span', 'badge', card.badge.text);
+        badge.style.setProperty('--c', card.badge.css);
+        head.append(badge);
       }
-
-      const desc = document.createElement('span');
-      desc.className = 'choice-desc';
-      desc.textContent = ch.desc;
-
-      b.append(name, pips, desc);
+      head.append(el('span', 'kicker' + (card.isNew ? ' new' : ''), card.kicker));
+      b.append(head, el('span', 'choice-name', card.title));
+      for (const line of card.lines) b.append(el('span', 'choice-desc', line));
+      if (card.note) b.append(el('span', 'choice-note', card.note));
       b.addEventListener('click', () => {
         if (picked) return;
         picked = true;
-        onPick(ch.id);
+        onPick(i);
       });
       this.choices.append(b);
-    }
-    this.levelup.hidden = false;
+    });
+
+    this.onReroll = reroll ? reroll.onReroll : null;
+    this.reroll.hidden = !reroll;
+    if (reroll) this.reroll.textContent = `Реролл (${reroll.left})`;
+    this.choice.hidden = false;
   }
 
-  hideLevelUp() {
-    this.levelup.hidden = true;
+  hideChoice() {
+    this.choice.hidden = true;
+    this.onReroll = null;
   }
 
   showGameOver(time: number, level: number, kills: number) {

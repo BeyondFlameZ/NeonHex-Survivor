@@ -151,3 +151,62 @@ html, body {
 .dash span { position: relative; }
 .dash.ready { color: var(--arcane); outline-color: var(--arcane); text-shadow: 0 0 8px rgba(62, 240, 255, 0.6); }
 .dash:active { transform: translate(2px, 2px); box-shadow: 3px 3px 0 #05030c; }
+
+/* ---------- слоты билда ---------- */
+.slots { display: flex; justify-content: space-between; gap: 10px; margin-top: 6px; }
+.slot-row { display: flex; gap: 4px; }
+.slot {
+  --c: #2a2250;
+  position: relative;
+  width: 30px;
+  height: 30px;
+  background: rgba(10, 6, 26, 0.7);
+  border: 2px solid #2a2250;
+  display: grid;
+  place-items: center;
+}
+.slot.filled { border-color: var(--c); background: color-mix(in srgb, var(--c) 18%, #0a061a); }
+.slot.evo { border-color: var(--gold); box-shadow: 0 0 8px rgba(255, 201, 74, 0.6); }
+.slot-tag { font-size: 9px; font-weight: 700; color: var(--c); letter-spacing: 0.02em; }
+.slot.gear .slot-tag { font-size: 12px; color: #3a3070; }
+.slot.gear.filled { --c: #c46bff; }
+.slot.gear.filled .slot-tag { color: var(--c); }
+.slot-lv {
+  position: absolute;
+  right: -2px;
+  bottom: -4px;
+  font-size: 10px;
+  font-weight: 700;
+  color: var(--ink);
+  text-shadow: 1px 1px 0 #05030c, -1px -1px 0 #05030c;
+}
+.slot.evo .slot-lv { color: var(--gold); }
+
+/* ---------- карточки выбора ---------- */
+.panel-head { display: flex; align-items: flex-start; justify-content: space-between; gap: 12px; }
+.reroll {
+  font: inherit;
+  font-size: 14px;
+  font-weight: 600;
+  color: var(--gold);
+  background: #1a1036;
+  border: 2px solid var(--gold);
+  padding: 8px 12px;
+  cursor: pointer;
+  flex-shrink: 0;
+}
+.reroll:active { transform: translate(2px, 2px); }
+.choice-head { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; }
+.badge {
+  --c: var(--arcane);
+  font-size: 12px;
+  font-weight: 600;
+  color: #05030c;
+  background: var(--c);
+  padding: 2px 6px;
+}
+.kicker { font-size: 12px; font-weight: 600; color: var(--gold); }
+.kicker.new { color: #7dff6a; }
+.choice-note { font-size: 12px; line-height: 1.4; color: var(--dim); border-top: 1px dashed #2a2250; padding-top: 6px; }
+.choice.gold { border-color: var(--gold); background: rgba(255, 201, 74, 0.08); box-shadow: 0 0 14px rgba(255, 201, 74, 0.25); }
+.choice.gold .choice-name { color: var(--gold); }

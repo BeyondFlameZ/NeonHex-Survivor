@@ -2,41 +2,95 @@ import { Application, Container, Graphics, Sprite, Texture, TilingSprite } from 
 import { AdvancedBloomFilter } from 'pixi-filters';
 import { CFG, COL } from './config';
 import { SpatialGrid } from './grid';
-import type { Hud } from './hud';
+import type { Card, Hud } from './hud';
 import type { Input } from './input';
 import { DamageNumbers } from './numbers';
 import { Pool } from './pool';
+import { SCHOOL_ORDER, SCHOOLS, type SchoolId } from './schools';
+import { computeStats, GEAR_GLYPH, GEAR_SLOTS, gearHasElem, rollGear, statText, type Gear, type Stats } from './stats';
 import * as tex from './textures';
-import { baseStats, rollChoices, UPGRADES, type Stats } from './upgrades';
+import { ARSENAL, START_WEAPON } from './weapons';
+import { F_NOFX, F_NOKB, F_NONUM, F_NOSET, type Weapon, type WeaponDef } from './weapons/types';
 
-type EK = 'x' | 'y' | 'hp' | 'spd' | 'r' | 'xp' | 'flash' | 'kx' | 'ky' | 'dcd' | 'kind' | 'ph';
-type BK = 'x' | 'y' | 'vx' | 'vy' | 'life' | 'dmg' | 'pierce' | 'last';
+type EK =
+  | 'x' | 'y' | 'hp' | 'spd' | 'r' | 'xp' | 'flash' | 'kx' | 'ky' | 'dcd' | 'kind' | 'ph' | 'burn' | 'bdps' | 'stun';
+type BK = 'x' | 'y' | 'vx' | 'vy' | 'life' | 'dmg' | 'pierce' | 'last' | 'elem' | 'aoe';
 type GK = 'x' | 'y' | 'v' | 'val' | 'mag';
 type PK = 'x' | 'y' | 'vx' | 'vy' | 'life' | 'max';
 type DK = 'x' | 'y' | 'life';
 type IK = 'x' | 'y' | 't';
 type HK = 'x' | 'y' | 'life' | 'max';
 
+interface Arc {
+  pts: number[];
+  color: number;
+  life: number;
+  max: number;
+  w: number;
+}
+interface Pillar {
+  x: number;
+  y: number;
+  color: number;
+  life: number;
+  max: number;
+  w: number;
+}
+interface Zone {
+  x: number;
+  y: number;
+  r: number;
+  life: number;
+  max: number;
+  dps: number;
+  elem: number;
+  color: number;
+  tick: number;
+}
+interface Option {
+  card: Card;
+  act: () => void;
+}
+
 const TAU = Math.PI * 2;
 const OCT = Math.PI / 4;
 const PX = CFG.px;
 const IMPACT_FRAME = 0.04;
+const MAX_WEAPONS = 6;
 const xpNeed = (lvl: number) => Math.round(5 * Math.pow(lvl, 1.35));
 const GIB_COLORS = [COL.blood, COL.bloodDark, 0x2e2340];
 
-const SRC_BOLT = 0;
-const SRC_DRONE = 1;
+function shuffle<T>(a: T[]) {
+  for (let i = a.length - 1; i > 0; i--) {
+    const j = (Math.random() * (i + 1)) | 0;
+    [a[i], a[j]] = [a[j], a[i]];
+  }
+  return a;
+}
 
 export class Game {
   readonly root = new Container();
+  readonly layerGround = new Container();
+  readonly layerFx = new Container();
+  readonly enemies: Pool<EK>;
+
+  // публичное состояние, которое читают оружия
+  px = 0;
+  py = 0;
+  time = 0;
+  stats: Stats = computeStats([]);
+  viewHW = 400;
+  viewHH = 400;
+
   private scene = new Container();
   private world = new Container();
   private bg: TilingSprite;
-  private light: Sprite;
+  private glow: Sprite;
   private vignette: Sprite;
   private hurtOverlay = new Graphics();
+  private groundG = new Graphics();
+  private fxG = new Graphics();
 
-  private enemies: Pool<EK>;
   private bullets: Pool<BK>;
   private gems: Pool<GK>;
   private sparks: Pool<PK>;
@@ -55,17 +109,24 @@ export class Game {
   private rimShown = 0;
   private splatTex: Texture[];
   private impactTex: Texture[];
-  private drones: Sprite[] = [];
   private hpBar = new Graphics();
 
-  // источники света кадра: игрок, снаряды, дроны, вспышки
+  private weapons: Weapon[] = [];
+  private gear: (Gear | null)[] = [null, null, null, null, null, null];
+  private setCounts: Record<SchoolId, number> = { electro: 0, pyro: 0, kinetic: 0, necro: 0, mech: 0, glitch: 0 };
+  private rerolls = 1;
+  private elecHits = 0;
+
+  private arcs: Arc[] = [];
+  private pillars: Pillar[] = [];
+  private zones: Zone[] = [];
+
   private lx = new Float32Array(CFG.maxLights);
   private ly = new Float32Array(CFG.maxLights);
   private lr = new Float32Array(CFG.maxLights);
   private ls = new Float32Array(CFG.maxLights);
   private lc = new Uint32Array(CFG.maxLights);
   private nL = 0;
-  // короткоживущие вспышки света
   private fx = new Float32Array(32);
   private fy = new Float32Array(32);
   private fr = new Float32Array(32);
@@ -75,10 +136,6 @@ export class Game {
   private fc = new Uint32Array(32);
   private nF = 0;
 
-  private stats: Stats = baseStats();
-  private levels: Record<string, number> = {};
-  private px = 0;
-  private py = 0;
   private face = 1;
   private moving = false;
   private hp: number = CFG.player.hp;
@@ -86,14 +143,11 @@ export class Game {
   private level = 1;
   private need = xpNeed(1);
   private kills = 0;
-  private time = 0;
   private tick = 0;
-  private boltTimer = 0.3;
-  private droneAngle = 0;
   private spawnAcc = 0;
   private nextWave = 60;
   private iframes = 0;
-  private shake = 0;
+  private shakeAmt = 0;
   private hurt = 0;
   private hitstop = 0;
   private lastStop = -1;
@@ -116,12 +170,12 @@ export class Game {
   ) {
     this.bg = new TilingSprite({ texture: tex.groundTile(), width: app.screen.width, height: app.screen.height });
 
-    this.light = new Sprite(tex.lightTex());
-    this.light.anchor.set(0.5);
-    this.light.blendMode = 'add';
-    this.light.tint = COL.arcane;
-    this.light.alpha = 0.2;
-    this.light.scale.set(2.4);
+    this.glow = new Sprite(tex.lightTex());
+    this.glow.anchor.set(0.5);
+    this.glow.blendMode = 'add';
+    this.glow.tint = COL.arcane;
+    this.glow.alpha = 0.2;
+    this.glow.scale.set(2.4);
 
     this.mageTex = tex.mageFrames();
     this.enemyTex = [tex.enemyFrames(0), tex.enemyFrames(1), tex.enemyFrames(2)];
@@ -136,7 +190,6 @@ export class Game {
     const rimLayer = new Container();
     const bulletLayer = new Container();
     const ghostLayer = new Container();
-    const droneLayer = new Container();
     const gibLayer = new Container();
     const sparkLayer = new Container();
     const impactLayer = new Container();
@@ -146,7 +199,7 @@ export class Game {
     this.gems = new Pool<GK>(CFG.maxGems, ['x', 'y', 'v', 'val', 'mag'], tex.crystalTex(), gemLayer, 'normal', PX);
     this.enemies = new Pool<EK>(
       CFG.maxEnemies,
-      ['x', 'y', 'hp', 'spd', 'r', 'xp', 'flash', 'kx', 'ky', 'dcd', 'kind', 'ph'],
+      ['x', 'y', 'hp', 'spd', 'r', 'xp', 'flash', 'kx', 'ky', 'dcd', 'kind', 'ph', 'burn', 'bdps', 'stun'],
       this.enemyTex[0][0],
       enemyLayer,
       'normal',
@@ -154,7 +207,7 @@ export class Game {
     );
     this.bullets = new Pool<BK>(
       CFG.maxBullets,
-      ['x', 'y', 'vx', 'vy', 'life', 'dmg', 'pierce', 'last'],
+      ['x', 'y', 'vx', 'vy', 'life', 'dmg', 'pierce', 'last', 'elem', 'aoe'],
       tex.boltTex(),
       bulletLayer,
       'normal',
@@ -166,7 +219,6 @@ export class Game {
     this.impacts = new Pool<IK>(CFG.maxImpacts, ['x', 'y', 't'], this.impactTex[0], impactLayer, 'add', PX);
     this.numbers = new DamageNumbers(CFG.maxNumbers, numberLayer, tex.digitTextures());
 
-    // рим-оверлей на слот врага; индекс слота = индекс в пуле, сам спрайт не свапается
     for (let i = 0; i < CFG.maxEnemies; i++) {
       const s = new Sprite(this.rimTex[0][0]);
       s.anchor.set(0.5);
@@ -180,29 +232,22 @@ export class Game {
     this.player.anchor.set(0.5);
     this.player.scale.set(PX);
 
-    const droneT = tex.droneTex();
-    for (let k = 0; k < 6; k++) {
-      const d = new Sprite(droneT);
-      d.anchor.set(0.5);
-      d.scale.set(PX);
-      d.visible = false;
-      droneLayer.addChild(d);
-      this.drones.push(d);
-    }
-
     this.world.addChild(
-      this.light,
+      this.glow,
       decalLayer,
+      this.groundG,
+      this.layerGround,
       gemLayer,
       enemyLayer,
       rimLayer,
       bulletLayer,
       ghostLayer,
       this.player,
-      droneLayer,
+      this.layerFx,
       gibLayer,
       sparkLayer,
       impactLayer,
+      this.fxG,
       this.hpBar,
       numberLayer,
     );
@@ -217,6 +262,8 @@ export class Game {
 
     this.vignette = new Sprite(tex.vignetteTex());
     this.root.addChild(this.scene, this.vignette, this.hurtOverlay);
+
+    this.addWeapon(START_WEAPON);
   }
 
   frame(dt: number) {
@@ -228,18 +275,363 @@ export class Game {
     this.render();
   }
 
+  // ================= API для оружия =================
+
   heal(n: number) {
     this.hp = Math.min(this.stats.maxHp, this.hp + n);
   }
+  cdMul() {
+    return Math.max(0.35, 1 - this.stats.cd);
+  }
+  dmgMul(elem: number) {
+    const set = elem === 0 && this.setCounts.electro >= 2 ? 0.15 : 0;
+    return 1 + this.stats.dmg + this.stats.elem[elem] + set;
+  }
+  areaMul() {
+    return 1 + this.stats.area;
+  }
+  durMul() {
+    return 1 + this.stats.dur;
+  }
+  speedMul() {
+    return 1 + this.stats.speed;
+  }
+  amount() {
+    return this.stats.amount;
+  }
+
+  // живые враги, чей круг касается круга (x, y, r)
+  forEachIn(x: number, y: number, r: number, cb: (j: number) => void) {
+    const g = this.grid;
+    const f = this.enemies.f;
+    const reach = r + CFG.enemyMaxR;
+    const x0 = Math.max(0, Math.floor((x - reach - g.ox) / g.cell));
+    const x1 = Math.min(g.cols - 1, Math.floor((x + reach - g.ox) / g.cell));
+    const y0 = Math.max(0, Math.floor((y - reach - g.oy) / g.cell));
+    const y1 = Math.min(g.rows - 1, Math.floor((y + reach - g.oy) / g.cell));
+    for (let cy = y0; cy <= y1; cy++) {
+      for (let cx = x0; cx <= x1; cx++) {
+        let j = g.head[cy * g.cols + cx];
+        while (j !== -1) {
+          if (f.hp[j] > 0) {
+            const dx = f.x[j] - x;
+            const dy = f.y[j] - y;
+            const rr = r + f.r[j];
+            if (dx * dx + dy * dy < rr * rr) cb(j);
+          }
+          j = g.next[j];
+        }
+      }
+    }
+  }
+
+  anyIn(x: number, y: number, r: number) {
+    let found = false;
+    this.forEachIn(x, y, r, () => {
+      found = true;
+    });
+    return found;
+  }
+
+  nearest(x: number, y: number, range: number, except?: Set<number>) {
+    const f = this.enemies.f;
+    let best = -1;
+    let bd = range * range;
+    for (let i = 0; i < this.enemies.n; i++) {
+      if (f.hp[i] <= 0 || except?.has(i)) continue;
+      const dx = f.x[i] - x;
+      const dy = f.y[i] - y;
+      const d2 = dx * dx + dy * dy;
+      if (d2 < bd) {
+        bd = d2;
+        best = i;
+      }
+    }
+    return best;
+  }
+
+  strongest(x: number, y: number, range: number, exclude = -1) {
+    const f = this.enemies.f;
+    let best = -1;
+    let bh = 0;
+    const r2 = range * range;
+    for (let i = 0; i < this.enemies.n; i++) {
+      if (f.hp[i] <= 0 || i === exclude) continue;
+      const dx = f.x[i] - x;
+      const dy = f.y[i] - y;
+      if (dx * dx + dy * dy > r2) continue;
+      if (f.hp[i] > bh) {
+        bh = f.hp[i];
+        best = i;
+      }
+    }
+    return best;
+  }
+
+  randomNear(x: number, y: number, range: number) {
+    const f = this.enemies.f;
+    const r2 = range * range;
+    let pick = -1;
+    let seen = 0;
+    for (let i = 0; i < this.enemies.n; i++) {
+      if (f.hp[i] <= 0) continue;
+      const dx = f.x[i] - x;
+      const dy = f.y[i] - y;
+      if (dx * dx + dy * dy > r2) continue;
+      if (Math.random() * ++seen < 1) pick = i;
+    }
+    return pick;
+  }
+
+  randomInView() {
+    const f = this.enemies.f;
+    let pick = -1;
+    let seen = 0;
+    for (let i = 0; i < this.enemies.n; i++) {
+      if (f.hp[i] <= 0) continue;
+      if (Math.abs(f.x[i] - this.px) > this.viewHW || Math.abs(f.y[i] - this.py) > this.viewHH) continue;
+      if (Math.random() * ++seen < 1) pick = i;
+    }
+    return pick;
+  }
+
+  // из 16 случайных врагов на экране — тот, у кого больше всего соседей
+  densest() {
+    let best = -1;
+    let bc = -1;
+    for (let k = 0; k < 16; k++) {
+      const j = this.randomInView();
+      if (j < 0) break;
+      let c = 0;
+      this.forEachIn(this.enemies.f.x[j], this.enemies.f.y[j], 60, () => c++);
+      if (c > bc) {
+        bc = c;
+        best = j;
+      }
+    }
+    return best;
+  }
+
+  segment(x0: number, y0: number, x1: number, y1: number, w: number, cb: (j: number) => void) {
+    const g = this.grid;
+    const f = this.enemies.f;
+    const reach = w + CFG.enemyMaxR;
+    const cx0 = Math.max(0, Math.floor((Math.min(x0, x1) - reach - g.ox) / g.cell));
+    const cx1 = Math.min(g.cols - 1, Math.floor((Math.max(x0, x1) + reach - g.ox) / g.cell));
+    const cy0 = Math.max(0, Math.floor((Math.min(y0, y1) - reach - g.oy) / g.cell));
+    const cy1 = Math.min(g.rows - 1, Math.floor((Math.max(y0, y1) + reach - g.oy) / g.cell));
+    const sx = x1 - x0;
+    const sy = y1 - y0;
+    const len2 = sx * sx + sy * sy || 1;
+    for (let cy = cy0; cy <= cy1; cy++) {
+      for (let cx = cx0; cx <= cx1; cx++) {
+        let j = g.head[cy * g.cols + cx];
+        while (j !== -1) {
+          if (f.hp[j] > 0) {
+            const t = Math.max(0, Math.min(1, ((f.x[j] - x0) * sx + (f.y[j] - y0) * sy) / len2));
+            const dx = f.x[j] - (x0 + sx * t);
+            const dy = f.y[j] - (y0 + sy * t);
+            const rr = w + f.r[j];
+            if (dx * dx + dy * dy < rr * rr) cb(j);
+          }
+          j = g.next[j];
+        }
+      }
+    }
+  }
+
+  // возвращает true, если этот удар добил врага
+  hit(j: number, dmg: number, nx: number, ny: number, elem: number, flags = 0): boolean {
+    const f = this.enemies.f;
+    if (f.hp[j] <= 0) return false;
+    const crit = Math.random() < this.stats.crit;
+    const d = crit ? dmg * 2.2 : dmg;
+    f.hp[j] -= d;
+    f.flash[j] = 0.08;
+
+    if (!(flags & F_NOKB)) {
+      const kb = 160 * (11 / f.r[j]) * (crit ? 1.8 : 1);
+      f.kx[j] += nx * kb;
+      f.ky[j] += ny * kb;
+    }
+
+    const color = crit ? COL.gold : SCHOOLS[SCHOOL_ORDER[elem]].color;
+    if (!(flags & F_NOFX)) {
+      const ix = f.x[j] - nx * f.r[j] * 0.6;
+      const iy = f.y[j] - ny * f.r[j] * 0.6 - 4;
+      this.impact(ix, iy, color, crit ? PX * 2 : PX);
+      this.flash(ix, iy, crit ? 120 : 64, crit ? 1.1 : 0.6, color, crit ? 0.16 : 0.08);
+      for (let k = 0; k < (crit ? 5 : 2); k++) {
+        const a = Math.atan2(-ny, -nx) + (Math.random() - 0.5) * 1.4;
+        const v = 90 + Math.random() * 120;
+        this.spark(f.x[j], f.y[j], Math.cos(a) * v, Math.sin(a) * v, 0.18 + Math.random() * 0.12, k ? COL.gold : 0xffffff);
+      }
+      if (crit) {
+        this.addShake(2.5);
+        this.stop(0.035);
+      }
+    }
+    if (!(flags & F_NONUM) || crit) this.numbers.add(f.x[j], f.y[j] - f.r[j] - 8, d, crit);
+
+    if (elem === 0 && !(flags & F_NOSET) && this.setCounts.electro >= 4 && ++this.elecHits % 10 === 0) {
+      this.orbital(f.x[j], f.y[j], 36 * this.areaMul(), 20 * this.dmgMul(0), COL.arcane, 0, F_NOSET);
+    }
+    return f.hp[j] <= 0;
+  }
+
+  // урон по площади; возвращает число убийств
+  aoe(x: number, y: number, r: number, dmg: number, elem: number, flags = 0, onHit?: (j: number) => void) {
+    const f = this.enemies.f;
+    let kills = 0;
+    this.forEachIn(x, y, r, (j) => {
+      const dx = f.x[j] - x;
+      const dy = f.y[j] - y;
+      const l = Math.hypot(dx, dy) || 1;
+      if (this.hit(j, dmg, dx / l, dy / l, elem, flags | F_NOFX)) kills++;
+      onHit?.(j);
+    });
+    return kills;
+  }
+
+  burn(j: number, sec: number, dps: number) {
+    const f = this.enemies.f;
+    f.burn[j] = Math.max(f.burn[j], sec);
+    f.bdps[j] = Math.max(f.bdps[j], dps * (this.setCounts.pyro >= 2 ? 1.5 : 1));
+  }
+
+  stun(j: number, sec: number) {
+    const f = this.enemies.f;
+    f.stun[j] = Math.max(f.stun[j], sec * (this.setCounts.electro >= 2 ? 2 : 1));
+  }
+
+  shoot(x: number, y: number, vx: number, vy: number, dmg: number, pierce: number, elem: number, aoe: number, life: number) {
+    const b = this.bullets;
+    const i = b.add();
+    if (i < 0) return;
+    const f = b.f;
+    f.x[i] = x;
+    f.y[i] = y;
+    f.vx[i] = vx;
+    f.vy[i] = vy;
+    f.dmg[i] = dmg;
+    f.pierce[i] = pierce;
+    f.last[i] = -1;
+    f.elem[i] = elem;
+    f.aoe[i] = aoe;
+    f.life[i] = life;
+  }
+
+  orbital(x: number, y: number, r: number, dmg: number, color: number, zoneDps: number, flags = 0) {
+    this.pillars.push({ x, y, color, life: 0.22, max: 0.22, w: 12 });
+    this.aoe(x, y, r, dmg, 0, flags, (j) => this.stun(j, 0.25));
+    this.impact(x, y, color, PX * 2);
+    this.flash(x, y, r * 3, 1.2, color, 0.18);
+    for (let k = 0; k < 4; k++) {
+      const a = Math.random() * TAU;
+      this.spark(x, y, Math.cos(a) * 160, Math.sin(a) * 160, 0.25, color);
+    }
+    if (zoneDps > 0) this.zone(x, y, r * 1.1, 2 * this.durMul(), zoneDps, 0, color);
+  }
+
+  zone(x: number, y: number, r: number, life: number, dps: number, elem: number, color: number) {
+    if (this.zones.length >= 60) return;
+    this.zones.push({ x, y, r, life, max: life, dps, elem, color, tick: 0 });
+  }
+
+  arc(pts: number[], color: number, life: number, w: number) {
+    if (this.arcs.length >= 120) return;
+    this.arcs.push({ pts, color, life, max: life, w });
+  }
+
+  // ломаная молнии между двумя точками
+  lightning(x0: number, y0: number, x1: number, y1: number) {
+    const dx = x1 - x0;
+    const dy = y1 - y0;
+    const len = Math.hypot(dx, dy) || 1;
+    const segs = Math.max(2, Math.min(10, (len / 14) | 0));
+    const nx = -dy / len;
+    const ny = dx / len;
+    const pts = [x0, y0];
+    for (let k = 1; k < segs; k++) {
+      const t = k / segs;
+      const off = (Math.random() - 0.5) * Math.min(18, len * 0.25);
+      pts.push(x0 + dx * t + nx * off, y0 + dy * t + ny * off);
+    }
+    pts.push(x1, y1);
+    return pts;
+  }
+
+  light(x: number, y: number, r: number, s: number, c: number) {
+    if (this.nL >= CFG.maxLights) return;
+    const i = this.nL++;
+    this.lx[i] = x;
+    this.ly[i] = y;
+    this.lr[i] = r;
+    this.ls[i] = s;
+    this.lc[i] = c;
+  }
+
+  number(x: number, y: number, v: number, crit: boolean) {
+    this.numbers.add(x, y, v, crit);
+  }
+
+  spark(x: number, y: number, vx: number, vy: number, life: number, tint: number) {
+    const p = this.sparks;
+    const i = p.add();
+    if (i < 0) return;
+    const f = p.f;
+    f.x[i] = x;
+    f.y[i] = y;
+    f.vx[i] = vx;
+    f.vy[i] = vy;
+    f.life[i] = f.max[i] = life;
+    p.sprites[i].tint = tint;
+  }
+
+  impact(x: number, y: number, tint: number, scale: number) {
+    const p = this.impacts;
+    const i = p.add();
+    if (i < 0) return;
+    p.f.x[i] = Math.round(x);
+    p.f.y[i] = Math.round(y);
+    p.f.t[i] = 0;
+    const s = p.sprites[i];
+    s.texture = this.impactTex[0];
+    s.tint = tint;
+    s.scale.set(scale);
+  }
+
+  flash(x: number, y: number, r: number, s: number, color: number, life: number) {
+    if (this.nF >= 32) return;
+    const i = this.nF++;
+    this.fx[i] = x;
+    this.fy[i] = y;
+    this.fr[i] = r;
+    this.fs[i] = s;
+    this.fl[i] = this.fm[i] = life;
+    this.fc[i] = color;
+  }
+
+  addShake(v: number) {
+    this.shakeAmt = Math.max(this.shakeAmt, v);
+  }
+
+  // мелкие стопы не чаще раза в 0.3с, иначе при сотне убийств в секунду игра встанет колом
+  stop(sec: number) {
+    if (sec < 0.06 && this.time - this.lastStop < 0.3) return;
+    this.hitstop = Math.max(this.hitstop, sec);
+    this.lastStop = this.time;
+  }
+
+  // ================= цикл =================
 
   private update(dt: number) {
     if (this.paused || this.over) return;
     this.input.poll();
 
-    // hitstop: мир замирает на пару кадров, тряска и вспышка продолжают жить
     if (this.hitstop > 0) {
       this.hitstop -= dt;
-      if (this.shake > 0) this.shake = Math.max(0, this.shake - dt * 40);
+      if (this.shakeAmt > 0) this.shakeAmt = Math.max(0, this.shakeAmt - dt * 40);
       return;
     }
 
@@ -248,19 +640,20 @@ export class Game {
     const s = this.stats;
     const mx = this.input.mx;
     const my = this.input.my;
+    const speed = CFG.player.speed * (1 + s.move);
 
     if (this.dashCd > 0) this.dashCd -= dt;
     if (this.input.consumeDash() && this.dashCd <= 0 && this.dashT <= 0) this.startDash(mx, my);
 
     if (this.dashT > 0) {
       this.dashT -= dt;
-      const v = s.moveSpeed * CFG.dash.mult;
+      const v = speed * CFG.dash.mult;
       this.px += this.dashX * v * dt;
       this.py += this.dashY * v * dt;
       if ((this.tick & 1) === 0) this.ghost();
     } else {
-      this.px += mx * s.moveSpeed * dt;
-      this.py += my * s.moveSpeed * dt;
+      this.px += mx * speed * dt;
+      this.py += my * speed * dt;
     }
     this.moving = mx !== 0 || my !== 0 || this.dashT > 0;
     if (this.dashT <= 0) {
@@ -269,7 +662,7 @@ export class Game {
     }
 
     if (this.iframes > 0) this.iframes -= dt;
-    if (this.shake > 0) this.shake = Math.max(0, this.shake - dt * 40);
+    if (this.shakeAmt > 0) this.shakeAmt = Math.max(0, this.shakeAmt - dt * 40);
     if (this.hurt > 0) this.hurt = Math.max(0, this.hurt - dt * 2.5);
     this.heal(s.regen * dt);
 
@@ -280,9 +673,9 @@ export class Game {
 
     this.spawn(dt);
     this.updateEnemies(dt);
-    this.fireBolts(dt);
+    for (const w of this.weapons) w.update(dt);
     this.updateBullets(dt);
-    this.updateDrones(dt);
+    this.updateZones(dt);
     this.reapEnemies();
     this.updateGems(dt);
     this.updateFx(this.sparks, dt, 0.9);
@@ -291,6 +684,7 @@ export class Game {
     this.updateTimed(this.ghosts, dt);
     this.updateImpacts(dt);
     this.updateFlashes(dt);
+    this.updateVisuals(dt);
     this.numbers.update(dt);
 
     while (this.xp >= this.need) {
@@ -309,13 +703,6 @@ export class Game {
       return;
     }
     if (this.pending > 0) this.openLevelUp();
-  }
-
-  private stop(sec: number) {
-    // мелкие стопы не чаще раза в 0.3с — иначе при сотне убийств в секунду игра встанет колом
-    if (sec < 0.06 && this.time - this.lastStop < 0.3) return;
-    this.hitstop = Math.max(this.hitstop, sec);
-    this.lastStop = this.time;
   }
 
   // ---------- рывок ----------
@@ -361,9 +748,7 @@ export class Game {
   // ---------- спавн ----------
 
   private ringRadius() {
-    const w = this.app.screen.width / this.zoom;
-    const h = this.app.screen.height / this.zoom;
-    return Math.hypot(w, h) / 2 + 40;
+    return Math.hypot(this.viewHW, this.viewHH) + 40;
   }
 
   private ringPoint() {
@@ -432,13 +817,16 @@ export class Game {
     f.dcd[i] = 0;
     f.kind[i] = kind;
     f.ph[i] = Math.random() * 2;
+    f.burn[i] = 0;
+    f.bdps[i] = 0;
+    f.stun[i] = 0;
   }
 
   // ---------- враги ----------
 
   private updateEnemies(dt: number) {
     const n = this.enemies.n;
-    const { x, y, hp, spd, r, flash, kx, ky, dcd } = this.enemies.f;
+    const { x, y, hp, spd, r, flash, kx, ky, dcd, burn, bdps, stun } = this.enemies.f;
     const g = this.grid;
     const { head, next, cols, rows, cell } = g;
     const pr = CFG.player.radius;
@@ -446,6 +834,17 @@ export class Game {
 
     for (let i = 0; i < n; i++) {
       if (hp[i] <= 0) continue;
+
+      if (burn[i] > 0) {
+        burn[i] -= dt;
+        hp[i] -= bdps[i] * dt;
+        if (burn[i] <= 0) bdps[i] = 0;
+        if (((this.tick + i) & 15) === 0) this.spark(x[i], y[i] - 6, (Math.random() - 0.5) * 30, -50, 0.35, 0xff7a2d);
+        if (hp[i] <= 0) continue;
+      }
+      if (flash[i] > 0) flash[i] -= dt;
+      if (dcd[i] > 0) dcd[i] -= dt;
+
       const dx = this.px - x[i];
       const dy = this.py - y[i];
       const d = Math.hypot(dx, dy) || 1;
@@ -454,6 +853,16 @@ export class Game {
         this.ringPoint();
         x[i] = this.tmpX;
         y[i] = this.tmpY;
+        continue;
+      }
+
+      if (stun[i] > 0) {
+        stun[i] -= dt;
+        kx[i] *= 0.85;
+        ky[i] *= 0.85;
+        x[i] += kx[i] * dt;
+        y[i] += ky[i] * dt;
+        if (((this.tick + i) & 15) === 0) this.spark(x[i], y[i] - 14, (Math.random() - 0.5) * 60, -30, 0.2, COL.arcane);
         continue;
       }
 
@@ -494,54 +903,15 @@ export class Game {
       y[i] += ((dy / d) * spd[i] + ky[i]) * dt;
       kx[i] *= 0.85;
       ky[i] *= 0.85;
-      if (flash[i] > 0) flash[i] -= dt;
-      if (dcd[i] > 0) dcd[i] -= dt;
 
       if (d < r[i] + pr && this.iframes <= 0) {
         this.hp -= CFG.enemy.contactDmg * (1 + this.time / 240);
         this.iframes = CFG.player.iframes;
-        this.shake = 6;
+        this.shakeAmt = 6;
         this.hurt = 1;
         this.flash(this.px, this.py, 150, 1, COL.blood, 0.2);
         this.stop(0.07);
       }
-    }
-  }
-
-  private hit(j: number, dmg: number, nx: number, ny: number, src: number) {
-    const f = this.enemies.f;
-    const crit = Math.random() < this.stats.crit;
-    const d = crit ? dmg * 2.2 : dmg;
-    f.hp[j] -= d;
-    f.flash[j] = 0.08;
-    const kb = 160 * (11 / f.r[j]) * (crit ? 1.8 : 1);
-    f.kx[j] += nx * kb;
-    f.ky[j] += ny * kb;
-
-    const ix = f.x[j] - nx * f.r[j] * 0.6;
-    const iy = f.y[j] - ny * f.r[j] * 0.6 - 4;
-    const tint = crit ? COL.gold : src === SRC_BOLT ? COL.arcane : COL.crystal;
-    this.impact(ix, iy, tint, crit ? PX * 2 : PX);
-    this.flash(ix, iy, crit ? 120 : 64, crit ? 1.1 : 0.6, tint, crit ? 0.16 : 0.08);
-    this.numbers.add(f.x[j], f.y[j] - f.r[j] - 8, d, crit);
-
-    const sp = this.sparks;
-    const sf = sp.f;
-    for (let k = 0; k < (crit ? 5 : 2); k++) {
-      const i = sp.add();
-      if (i < 0) break;
-      const a = Math.atan2(-ny, -nx) + (Math.random() - 0.5) * 1.4;
-      const v = 90 + Math.random() * 120;
-      sf.x[i] = f.x[j];
-      sf.y[i] = f.y[j];
-      sf.vx[i] = Math.cos(a) * v;
-      sf.vy[i] = Math.sin(a) * v;
-      sf.life[i] = sf.max[i] = 0.18 + Math.random() * 0.12;
-      sp.sprites[i].tint = k === 0 ? 0xffffff : COL.gold;
-    }
-    if (crit) {
-      this.shake = Math.max(this.shake, 2.5);
-      this.stop(0.035);
     }
   }
 
@@ -552,63 +922,27 @@ export class Game {
       if (f.hp[i] > 0) continue;
       this.kills++;
       const kind = f.kind[i];
-      this.dropGem(f.x[i], f.y[i], f.xp[i]);
-      this.burst(f.x[i], f.y[i], f.r[i], kind);
+      const x = f.x[i];
+      const y = f.y[i];
+      this.dropGem(x, y, f.xp[i]);
+      this.burst(x, y, f.r[i], kind);
       if (kind === 2) {
-        this.impact(f.x[i], f.y[i], COL.gold, PX * 4);
-        this.flash(f.x[i], f.y[i], 220, 1.3, COL.gold, 0.3);
-        this.shake = 8;
+        this.impact(x, y, COL.gold, PX * 4);
+        this.flash(x, y, 220, 1.3, COL.gold, 0.3);
+        this.shakeAmt = 8;
         this.stop(0.09);
       } else {
-        this.flash(f.x[i], f.y[i], 70, 0.7, COL.blood, 0.12);
+        this.flash(x, y, 70, 0.7, COL.blood, 0.12);
+      }
+      if (f.burn[i] > 0 && this.setCounts.pyro >= 4) {
+        this.aoe(x, y, 40 * this.areaMul(), 12 * this.dmgMul(1), 1, F_NOSET | F_NONUM);
+        this.impact(x, y, SCHOOLS.pyro.color, PX * 2);
       }
       e.kill(i);
     }
   }
 
-  // ---------- оружие ----------
-
-  private fireBolts(dt: number) {
-    this.boltTimer -= dt;
-    if (this.boltTimer > 0) return;
-
-    const e = this.enemies;
-    const { x, y, hp } = e.f;
-    let best = -1;
-    let bestD = CFG.boltRange * CFG.boltRange;
-    for (let i = 0; i < e.n; i++) {
-      if (hp[i] <= 0) continue;
-      const dx = x[i] - this.px;
-      const dy = y[i] - this.py;
-      const d2 = dx * dx + dy * dy;
-      if (d2 < bestD) {
-        bestD = d2;
-        best = i;
-      }
-    }
-    if (best < 0) return;
-
-    const s = this.stats;
-    this.boltTimer = s.cooldown;
-    const base = Math.atan2(y[best] - this.py, x[best] - this.px);
-    const b = this.bullets;
-    const bf = b.f;
-    for (let k = 0; k < s.boltCount; k++) {
-      const j = b.add();
-      if (j < 0) break;
-      const a = base + (k - (s.boltCount - 1) / 2) * 0.16;
-      bf.x[j] = this.px;
-      bf.y[j] = this.py - 4;
-      bf.vx[j] = Math.cos(a) * s.boltSpeed;
-      bf.vy[j] = Math.sin(a) * s.boltSpeed;
-      bf.life[j] = 1.1;
-      bf.dmg[j] = s.dmg;
-      bf.pierce[j] = s.pierce;
-      bf.last[j] = -1;
-    }
-    // вспышка у посоха при выстреле
-    this.impact(this.px + Math.cos(base) * 12, this.py - 4 + Math.sin(base) * 12, COL.arcane, PX);
-  }
+  // ---------- снаряды ----------
 
   private updateBullets(dt: number) {
     const b = this.bullets;
@@ -630,7 +964,9 @@ export class Game {
 
       const bx = f.x[k];
       const by = f.y[k];
-      if (trail) this.spark(bx, by, 0, 0, 0.14, COL.arcane);
+      const elem = f.elem[k];
+      const color = SCHOOLS[SCHOOL_ORDER[elem]].color;
+      if (trail) this.spark(bx, by, 0, 0, 0.14, color);
 
       const x0 = Math.max(0, Math.floor((bx - reach - g.ox) / cell));
       const x1 = Math.min(cols - 1, Math.floor((bx + reach - g.ox) / cell));
@@ -648,7 +984,12 @@ export class Game {
               const rr = CFG.boltRadius + e.r[j];
               if (dx * dx + dy * dy < rr * rr) {
                 const sp = Math.hypot(f.vx[k], f.vy[k]) || 1;
-                this.hit(j, f.dmg[k], f.vx[k] / sp, f.vy[k] / sp, SRC_BOLT);
+                this.hit(j, f.dmg[k], f.vx[k] / sp, f.vy[k] / sp, elem);
+                if (f.aoe[k] > 0) {
+                  this.aoe(e.x[j], e.y[j], f.aoe[k], f.dmg[k] * 0.5, elem, F_NONUM);
+                  this.impact(e.x[j], e.y[j], color, PX * 2);
+                  this.flash(e.x[j], e.y[j], f.aoe[k] * 2.5, 0.9, color, 0.12);
+                }
                 f.last[k] = j;
                 if (--f.pierce[k] < 0) {
                   dead = true;
@@ -664,50 +1005,31 @@ export class Game {
     }
   }
 
-  private updateDrones(dt: number) {
-    const s = this.stats;
-    for (let k = 0; k < this.drones.length; k++) this.drones[k].visible = k < s.drones;
-    if (s.drones === 0) return;
-
-    this.droneAngle += dt * 2.8;
-    const e = this.enemies.f;
-    const g = this.grid;
-    const { head, next, cols, rows, cell } = g;
-    const R = CFG.drone.orbit;
-    const dr = CFG.drone.radius;
-    const reach = dr + CFG.enemyMaxR;
-
-    for (let k = 0; k < s.drones; k++) {
-      const a = this.droneAngle + (k / s.drones) * TAU;
-      const dx = this.px + Math.cos(a) * R;
-      const dy = this.py + Math.sin(a) * R;
-      this.drones[k].position.set(Math.round(dx), Math.round(dy));
-      if ((this.tick & 3) === k % 4) this.spark(dx, dy, 0, 0, 0.2, COL.crystal);
-
-      const x0 = Math.max(0, Math.floor((dx - reach - g.ox) / cell));
-      const x1 = Math.min(cols - 1, Math.floor((dx + reach - g.ox) / cell));
-      const y0 = Math.max(0, Math.floor((dy - reach - g.oy) / cell));
-      const y1 = Math.min(rows - 1, Math.floor((dy + reach - g.oy) / cell));
-      for (let cy = y0; cy <= y1; cy++) {
-        for (let cx = x0; cx <= x1; cx++) {
-          let j = head[cy * cols + cx];
-          while (j !== -1) {
-            if (e.hp[j] > 0 && e.dcd[j] <= 0) {
-              const ox = e.x[j] - dx;
-              const oy = e.y[j] - dy;
-              const rr = dr + e.r[j];
-              if (ox * ox + oy * oy < rr * rr) {
-                const lx = e.x[j] - this.px;
-                const ly = e.y[j] - this.py;
-                const len = Math.hypot(lx, ly) || 1;
-                this.hit(j, s.droneDmg, lx / len, ly / len, SRC_DRONE);
-                e.dcd[j] = 0.35;
-              }
-            }
-            j = next[j];
-          }
-        }
+  private updateZones(dt: number) {
+    for (let i = this.zones.length - 1; i >= 0; i--) {
+      const z = this.zones[i];
+      z.life -= dt;
+      if (z.life <= 0) {
+        this.zones.splice(i, 1);
+        continue;
       }
+      z.tick -= dt;
+      if (z.tick <= 0) {
+        z.tick = 0.25;
+        this.aoe(z.x, z.y, z.r, z.dps * 0.25, z.elem, F_NOFX | F_NONUM | F_NOKB);
+        this.spark(z.x + (Math.random() - 0.5) * z.r, z.y + (Math.random() - 0.5) * z.r * 0.6, 0, -50, 0.4, z.color);
+      }
+    }
+  }
+
+  private updateVisuals(dt: number) {
+    for (let i = this.arcs.length - 1; i >= 0; i--) {
+      this.arcs[i].life -= dt;
+      if (this.arcs[i].life <= 0) this.arcs.splice(i, 1);
+    }
+    for (let i = this.pillars.length - 1; i >= 0; i--) {
+      this.pillars[i].life -= dt;
+      if (this.pillars[i].life <= 0) this.pillars.splice(i, 1);
     }
   }
 
@@ -733,7 +1055,7 @@ export class Game {
   private updateGems(dt: number) {
     const g = this.gems;
     const f = g.f;
-    const pick = this.stats.pickup;
+    const pick = CFG.player.pickup * (1 + this.stats.pickup);
     const grab = CFG.player.radius + 6;
     for (let i = g.n - 1; i >= 0; i--) {
       const dx = this.px - f.x[i];
@@ -754,61 +1076,8 @@ export class Game {
     }
   }
 
-  private spark(x: number, y: number, vx: number, vy: number, life: number, tint: number) {
-    const p = this.sparks;
-    const i = p.add();
-    if (i < 0) return;
-    const f = p.f;
-    f.x[i] = x;
-    f.y[i] = y;
-    f.vx[i] = vx;
-    f.vy[i] = vy;
-    f.life[i] = f.max[i] = life;
-    p.sprites[i].tint = tint;
-  }
-
-  private impact(x: number, y: number, tint: number, scale: number) {
-    const p = this.impacts;
-    const i = p.add();
-    if (i < 0) return;
-    p.f.x[i] = Math.round(x);
-    p.f.y[i] = Math.round(y);
-    p.f.t[i] = 0;
-    const s = p.sprites[i];
-    s.texture = this.impactTex[0];
-    s.tint = tint;
-    s.scale.set(scale);
-  }
-
-  private flash(x: number, y: number, r: number, s: number, color: number, life: number) {
-    if (this.nF >= 32) return;
-    const i = this.nF++;
-    this.fx[i] = x;
-    this.fy[i] = y;
-    this.fr[i] = r;
-    this.fs[i] = s;
-    this.fl[i] = this.fm[i] = life;
-    this.fc[i] = color;
-  }
-
-  private updateFlashes(dt: number) {
-    for (let i = this.nF - 1; i >= 0; i--) {
-      this.fl[i] -= dt;
-      if (this.fl[i] > 0) continue;
-      const j = --this.nF;
-      this.fx[i] = this.fx[j];
-      this.fy[i] = this.fy[j];
-      this.fr[i] = this.fr[j];
-      this.fs[i] = this.fs[j];
-      this.fl[i] = this.fl[j];
-      this.fm[i] = this.fm[j];
-      this.fc[i] = this.fc[j];
-    }
-  }
-
   private burst(x: number, y: number, r: number, kind: number) {
     const big = r > 15;
-
     const gp = this.gibs;
     const gf = gp.f;
     const gibCount = big ? 14 : 7;
@@ -877,64 +1146,196 @@ export class Game {
     }
   }
 
-  // ---------- прокачка ----------
+  private updateFlashes(dt: number) {
+    for (let i = this.nF - 1; i >= 0; i--) {
+      this.fl[i] -= dt;
+      if (this.fl[i] > 0) continue;
+      const j = --this.nF;
+      this.fx[i] = this.fx[j];
+      this.fy[i] = this.fy[j];
+      this.fr[i] = this.fr[j];
+      this.fs[i] = this.fs[j];
+      this.fl[i] = this.fl[j];
+      this.fm[i] = this.fm[j];
+      this.fc[i] = this.fc[j];
+    }
+  }
 
-  private openLevelUp() {
-    const choices = rollChoices(this.levels);
-    if (choices.length === 0) {
-      this.pending = 0;
-      this.heal(Infinity);
-      return;
-    }
-    this.paused = true;
-    for (let k = 0; k < 16; k++) {
-      const a = (k / 16) * TAU;
-      this.spark(this.px, this.py, Math.cos(a) * 220, Math.sin(a) * 220, 0.4, COL.gold);
-    }
-    this.impact(this.px, this.py, COL.gold, PX * 4);
-    this.flash(this.px, this.py, 240, 1.2, COL.gold, 0.4);
-    this.hud.showLevelUp(
-      choices.map((u) => ({ id: u.id, name: u.name, desc: u.desc, level: this.levels[u.id] ?? 0, max: u.max })),
-      (id) => {
-        const u = UPGRADES.find((q) => q.id === id)!;
-        u.apply(this.stats, this);
-        this.levels[id] = (this.levels[id] ?? 0) + 1;
-        this.pending--;
-        this.hud.hideLevelUp();
-        this.paused = false;
-        if (this.pending > 0) this.openLevelUp();
-      },
+  // ================= арсенал и снаряжение =================
+
+  private addWeapon(def: WeaponDef) {
+    this.weapons.push(def.make(this));
+    this.recountSets();
+    this.refreshSlots();
+  }
+
+  private recountSets() {
+    for (const id of SCHOOL_ORDER) this.setCounts[id] = 0;
+    for (const w of this.weapons) this.setCounts[w.def.school]++;
+  }
+
+  private equip(g: Gear) {
+    const oldMax = this.stats.maxHp;
+    this.gear[g.slot] = g;
+    this.stats = computeStats(this.gear);
+    if (this.stats.maxHp > oldMax) this.heal(this.stats.maxHp - oldMax);
+    this.hp = Math.min(this.hp, this.stats.maxHp);
+    this.refreshSlots();
+  }
+
+  private refreshSlots() {
+    this.hud.setSlots(
+      this.weapons.map((w) => ({
+        tag: w.def.tag,
+        css: SCHOOLS[w.def.school].css,
+        level: w.level,
+        evolved: w.evolved,
+      })),
+      this.gear.map((g, k) => ({ glyph: GEAR_GLYPH[k], filled: !!g })),
     );
   }
 
-  // ---------- свет ----------
-
-  private pushLight(x: number, y: number, r: number, s: number, c: number) {
-    if (this.nL >= CFG.maxLights) return;
-    const i = this.nL++;
-    this.lx[i] = x;
-    this.ly[i] = y;
-    this.lr[i] = r;
-    this.ls[i] = s;
-    this.lc[i] = c;
+  private schoolBadge(def: WeaponDef) {
+    const s = SCHOOLS[def.school];
+    return { text: s.name, css: s.css };
   }
 
-  private collectLights() {
-    this.nL = 0;
-    if (!this.over) this.pushLight(this.px, this.py - 6, 170, 0.85, COL.arcane);
-    for (let i = 0; i < this.nF; i++) {
-      this.pushLight(this.fx[i], this.fy[i], this.fr[i], this.fs[i] * (this.fl[i] / this.fm[i]), this.fc[i]);
-    }
-    const s = this.stats;
-    for (let k = 0; k < s.drones; k++) {
-      const d = this.drones[k];
-      this.pushLight(d.x, d.y, 80, 0.7, COL.crystal);
-    }
-    const b = this.bullets;
-    for (let i = 0; i < b.n && this.nL < CFG.maxLights; i++) this.pushLight(b.f.x[i], b.f.y[i], 90, 0.8, COL.arcane);
+  private setNote(def: WeaponDef, after: number) {
+    const s = SCHOOLS[def.school];
+    if (after === 2) return `Сет «${s.name}» 2/4: ${s.set2}`;
+    if (after === 4) return `Сет «${s.name}» 4/4: ${s.set4}`;
+    return `Сет «${s.name}» ${after}/4`;
   }
 
-  // ---------- рендер ----------
+  private openLevelUp() {
+    const resolving = this.level - this.pending + 1;
+    if (resolving % 5 === 0) this.openGear();
+    else this.openWeapons();
+  }
+
+  private openWeapons() {
+    const opts: Option[] = [];
+
+    const evo = this.weapons.find(
+      (w) => w.level >= 8 && !w.evolved && gearHasElem(this.gear, SCHOOLS[w.def.school].elem),
+    );
+    if (evo) {
+      opts.push({
+        card: {
+          kicker: 'Компиляция',
+          title: evo.def.evo.name,
+          lines: [evo.def.evo.desc],
+          badge: this.schoolBadge(evo.def),
+          note: `${evo.def.name} + снаряжение школы «${SCHOOLS[evo.def.school].name}»`,
+          gold: true,
+        },
+        act: () => {
+          evo.evolved = true;
+          this.impact(this.px, this.py, COL.gold, PX * 6);
+          this.flash(this.px, this.py, 320, 1.5, COL.gold, 0.5);
+          this.addShake(8);
+        },
+      });
+    }
+
+    const pool: Option[] = [];
+    for (const w of this.weapons) {
+      if (w.level >= 8) continue;
+      pool.push({
+        card: {
+          kicker: `Ур. ${w.level} → ${w.level + 1}`,
+          title: w.def.name,
+          lines: [w.def.perks[w.level - 1]],
+          badge: this.schoolBadge(w.def),
+        },
+        act: () => {
+          w.level++;
+        },
+      });
+    }
+    if (this.weapons.length < MAX_WEAPONS) {
+      for (const def of ARSENAL) {
+        if (this.weapons.some((w) => w.def === def)) continue;
+        pool.push({
+          card: {
+            kicker: 'Новое',
+            title: def.name,
+            lines: [def.desc],
+            badge: this.schoolBadge(def),
+            note: this.setNote(def, this.setCounts[def.school] + 1),
+            isNew: true,
+          },
+          act: () => this.addWeapon(def),
+        });
+      }
+    }
+    shuffle(pool);
+    while (opts.length < 3 && pool.length) opts.push(pool.pop()!);
+
+    if (opts.length === 0) {
+      opts.push({
+        card: { kicker: 'Ремонт', title: 'Нанопатч', lines: ['Полностью восстанавливает здоровье'] },
+        act: () => this.heal(Infinity),
+      });
+    }
+    this.present('Новый уровень', 'Выбери модуль', opts);
+  }
+
+  private openGear() {
+    const owned = [...new Set(this.weapons.map((w) => SCHOOLS[w.def.school].elem))];
+    let items = [rollGear(owned), rollGear(owned), rollGear(owned)];
+
+    const show = () => {
+      const opts: Option[] = items.map((g) => {
+        const cur = this.gear[g.slot];
+        const unlock = this.weapons.find(
+          (w) =>
+            w.level >= 8 &&
+            !w.evolved &&
+            !gearHasElem(this.gear, SCHOOLS[w.def.school].elem) &&
+            g.stats.some((s) => s.key === 'elem' && s.elem === SCHOOLS[w.def.school].elem),
+        );
+        return {
+          card: {
+            kicker: GEAR_SLOTS[g.slot],
+            title: g.name,
+            lines: g.stats.map(statText),
+            note: unlock ? `Откроет компиляцию ${unlock.def.evo.name}` : cur ? `Заменит: ${cur.name}` : 'Пустой слот',
+            gold: !!unlock,
+          },
+          act: () => this.equip(g),
+        };
+      });
+      this.present('Снаряжение', 'Выбери имплант', opts, this.rerolls > 0 ? () => {
+        this.rerolls--;
+        items = [rollGear(owned), rollGear(owned), rollGear(owned)];
+        show();
+      } : undefined);
+    };
+    show();
+  }
+
+  private present(title: string, sub: string, opts: Option[], reroll?: () => void) {
+    this.paused = true;
+    this.impact(this.px, this.py, COL.gold, PX * 4);
+    this.flash(this.px, this.py, 240, 1.2, COL.gold, 0.4);
+    this.hud.showChoice(
+      title,
+      sub,
+      opts.map((o) => o.card),
+      (i) => {
+        opts[i].act();
+        this.pending--;
+        this.hud.hideChoice();
+        this.paused = false;
+        this.refreshSlots();
+        if (this.pending > 0) this.openLevelUp();
+      },
+      reroll ? { left: this.rerolls, onReroll: reroll } : undefined,
+    );
+  }
+
+  // ================= рендер =================
 
   private render() {
     const w = this.app.screen.width;
@@ -943,12 +1344,14 @@ export class Game {
     const P = Math.max(2, Math.min(5, Math.round((Math.min(w, h) / 560) * PX)));
     this.zoom = P / PX;
     const z = this.zoom;
+    this.viewHW = w / 2 / z;
+    this.viewHH = h / 2 / z;
 
     let sx = 0;
     let sy = 0;
-    if (this.shake > 0 && !this.paused) {
-      sx = (Math.random() * 2 - 1) * this.shake;
-      sy = (Math.random() * 2 - 1) * this.shake;
+    if (this.shakeAmt > 0 && !this.paused) {
+      sx = (Math.random() * 2 - 1) * this.shakeAmt;
+      sy = (Math.random() * 2 - 1) * this.shakeAmt;
     }
     const wx = Math.round(w / 2 - this.px * z + sx);
     const wy = Math.round(h / 2 - this.py * z + sy);
@@ -959,13 +1362,50 @@ export class Game {
     this.bg.tileScale.set(P);
     this.bg.tilePosition.set(wx, wy);
 
-    this.collectLights();
+    // --- свет и векторные эффекты кадра ---
+    this.nL = 0;
+    const fxG = this.fxG;
+    const groundG = this.groundG;
+    fxG.clear();
+    groundG.clear();
+
+    if (!this.over) this.light(this.px, this.py - 6, 170, 0.85, COL.arcane);
+    for (let i = 0; i < this.nF; i++) {
+      this.light(this.fx[i], this.fy[i], this.fr[i], this.fs[i] * (this.fl[i] / this.fm[i]), this.fc[i]);
+    }
+
+    for (const zn of this.zones) {
+      const k = Math.min(1, zn.life / 0.4);
+      groundG.circle(zn.x, zn.y, zn.r).fill({ color: zn.color, alpha: 0.16 * k });
+      groundG.circle(zn.x, zn.y, zn.r).stroke({ width: 2, color: zn.color, alpha: 0.45 * k });
+      this.light(zn.x, zn.y, zn.r * 1.6, 0.45 * k, zn.color);
+    }
+    for (const a of this.arcs) {
+      const k = a.life / a.max;
+      fxG.moveTo(a.pts[0], a.pts[1]);
+      for (let i = 2; i < a.pts.length; i += 2) fxG.lineTo(a.pts[i], a.pts[i + 1]);
+      fxG.stroke({ width: a.w, color: a.color, alpha: k });
+    }
+    for (const p of this.pillars) {
+      const k = p.life / p.max;
+      const pw = p.w * k;
+      fxG.rect(p.x - pw / 2, p.y - 520, pw, 520).fill({ color: p.color, alpha: 0.45 * k });
+      fxG.rect(p.x - pw / 6, p.y - 520, pw / 3, 520).fill({ color: 0xffffff, alpha: 0.9 * k });
+      this.light(p.x, p.y, 150, 1.2 * k, p.color);
+    }
+    for (const wpn of this.weapons) wpn.draw(fxG, groundG);
+
+    const b = this.bullets;
+    for (let i = 0; i < b.n && this.nL < CFG.maxLights; i++) {
+      this.light(b.f.x[i], b.f.y[i], 90, 0.8, SCHOOLS[SCHOOL_ORDER[b.f.elem[i]]].color);
+    }
+
+    // --- враги с динамическим rim light ---
     const nL = this.nL;
     const { lx, ly, lr, ls, lc } = this;
-
     const t = this.time;
-    const halfW = w / 2 / z + 48;
-    const halfH = h / 2 / z + 48;
+    const halfW = this.viewHW + 48;
+    const halfH = this.viewHH + 48;
     const e = this.enemies;
     const ef = e.f;
 
@@ -984,7 +1424,8 @@ export class Game {
       const kind = ef.kind[i];
       const frames = this.enemyTex[kind];
       const flashing = ef.flash[i] > 0;
-      const frame = flashing ? 0 : ((t * 5 + ef.ph[i]) | 0) & 1;
+      const frozen = ef.stun[i] > 0;
+      const frame = flashing || frozen ? 0 : ((t * 5 + ef.ph[i]) | 0) & 1;
       s.texture = flashing ? frames[2] : frames[frame];
       const sc = kind === 2 ? PX * 2 : PX;
       const flip = ex > this.px ? -1 : 1;
@@ -993,7 +1434,6 @@ export class Game {
       s.scale.set(sc * flip, sc);
       s.position.set(rx, ry);
 
-      // суммарный вектор света + цвет самого сильного источника → маска rim под 8 направлений
       let ax = 0;
       let ay = 0;
       let total = 0;
@@ -1017,12 +1457,17 @@ export class Game {
           col = lc[l];
         }
       }
+      // горящих подсвечивает их же пламя снизу
+      if (ef.burn[i] > 0) {
+        ay += 0.5;
+        total += 0.5;
+        if (best < 0.5) col = 0xff7a2d;
+      }
 
       if (total < 0.04 || flashing) {
         rim.visible = false;
         continue;
       }
-      // спрайт отзеркален — зеркалим и направление света в локальные координаты текстуры
       const dir = (((Math.round(Math.atan2(ay, ax * flip) / OCT) % 8) + 8) % 8) | 0;
       rim.visible = true;
       rim.texture = this.rimTex[frame][dir];
@@ -1034,7 +1479,6 @@ export class Game {
     for (let i = e.n; i < this.rimShown; i++) this.rims[i].visible = false;
     this.rimShown = e.n;
 
-    const b = this.bullets;
     for (let i = 0; i < b.n; i++) b.sprites[i].position.set(Math.round(b.f.x[i]), Math.round(b.f.y[i]));
 
     const g = this.gems;
@@ -1080,8 +1524,8 @@ export class Game {
     const blink = this.dashT <= 0 && this.iframes > 0 && ((t * 20) | 0) & 1;
     this.player.visible = !this.over && !blink;
 
-    this.light.position.set(this.px, this.py);
-    this.light.alpha = 0.18 + Math.sin(t * 2.2) * 0.03;
+    this.glow.position.set(this.px, this.py);
+    this.glow.alpha = 0.18 + Math.sin(t * 2.2) * 0.03;
 
     const hb = this.hpBar;
     hb.clear();
