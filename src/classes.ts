@@ -21,6 +21,7 @@ export interface ClassDef {
   start: string;
   pal: MagePal;
   mods: ClassMods;
+  ult: { name: string; desc: string };
   unlock: (p: Profile) => boolean;
   unlockText: string;
 }
@@ -34,6 +35,7 @@ export const CLASSES: ClassDef[] = [
     start: 'bolt',
     pal: { c: '#1b2a5a', C: '#2d4a8f', t: '#3ef0ff', m: '#8a4dff' },
     mods: { xp: 0.1, rerolls: 1 },
+    ult: { name: 'Перегрузка сети', desc: '3 секунды орбитальные удары молний по всему экрану' },
     unlock: () => true,
     unlockText: '',
   },
@@ -45,6 +47,7 @@ export const CLASSES: ClassDef[] = [
     start: 'pyre',
     pal: { c: '#5a1a14', C: '#9a2e1a', t: '#ffb03a', m: '#ff7a2d' },
     mods: { elem: [1, 0.25], area: 0.1 },
+    ult: { name: 'Огненный шторм', desc: '4 секунды с неба падают огненные метеоры' },
     unlock: (p) => p.won[0],
     unlockText: 'Пройди Кибер-некрополь',
   },
@@ -56,6 +59,7 @@ export const CLASSES: ClassDef[] = [
     start: 'cryo',
     pal: { c: '#1a3a5a', C: '#3a6a9a', t: '#e8ffff', m: '#9ad8ff' },
     mods: { elem: [2, 0.25], maxHp: 20 },
+    ult: { name: 'Абсолютный ноль', desc: 'Замораживает и бьёт всех врагов на экране' },
     unlock: (p) => p.won[1],
     unlockText: 'Пройди Пылающую плавильню',
   },
@@ -67,6 +71,7 @@ export const CLASSES: ClassDef[] = [
     start: 'virus',
     pal: { c: '#1a3a2a', C: '#2a6a4a', t: '#7dff6a', m: '#b8ff3a' },
     mods: { elem: [3, 0.25], regen: 0.5 },
+    ult: { name: 'Армия мертвецов', desc: 'Поднимает 8 мертвецов, которые сражаются 12 секунд' },
     unlock: (p) => p.won[2],
     unlockText: 'Пройди Ледяные катакомбы',
   },
@@ -78,6 +83,7 @@ export const CLASSES: ClassDef[] = [
     start: 'orbit',
     pal: { c: '#4a3a1a', C: '#7a6a3a', t: '#ffc94a', m: '#ff9a3c' },
     mods: { elem: [4, 0.25], dur: 0.15 },
+    ult: { name: 'Орбитальная бомбардировка', desc: '6 сверхмощных ударов по самым плотным толпам' },
     unlock: (p) => p.won[3],
     unlockText: 'Пройди Биоулей',
   },
@@ -89,6 +95,7 @@ export const CLASSES: ClassDef[] = [
     start: 'mirror',
     pal: { c: '#4a1a4a', C: '#8a2a8a', t: '#ff4fd8', m: '#c46bff' },
     mods: { elem: [5, 0.25], dashCd: 0.5 },
+    ult: { name: 'Стоп-кадр', desc: 'Останавливает время для всех врагов на экране на 4 секунды' },
     unlock: (p) => p.won[4],
     unlockText: 'Пройди Собор Бездны',
   },

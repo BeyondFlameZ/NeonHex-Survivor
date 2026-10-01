@@ -25,6 +25,15 @@ export interface RunOpts {
   endless: boolean;
   daily: string[] | null;
   cls: string;
+  rift: number; // 0 — не портал, иначе уровень Великого портала
+}
+
+// Великий портал: случайная локация, 5 минут на прогресс 100%, затем страж
+export const RIFT_TIME = 300;
+export const riftHp = (n: number) => Math.pow(1.17, n - 1);
+export const riftDmg = (n: number) => Math.pow(1.09, n - 1);
+export function riftLevel(n: number, open: number[]) {
+  return open[(Math.imul(n, 2654435761) >>> 0) % open.length];
 }
 
 export interface Modifier {

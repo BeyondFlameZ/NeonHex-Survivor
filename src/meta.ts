@@ -1,6 +1,9 @@
 import { CLASSES } from './classes';
 import { levelChallenges, LEVELS } from './levels';
+import { LORE, loreNeed } from './lore';
 import { TIERS, todayKey } from './modes';
+import { paragonBonuses, paragonLevel } from './paragon';
+import { gemBonuses, newRelic, randomGem, type Relic } from './relics';
 import { saveProfile, type Profile, type RunResult } from './save';
 
 export interface ShopItem {
@@ -29,18 +32,24 @@ export const shopLevel = (p: Profile, id: string) => p.shop[id] ?? 0;
 // бонусы мастерской, которые игра подмешивает в стартовые статы
 export function metaBonuses(p: Profile) {
   const l = (id: string) => shopLevel(p, id);
+  const pg = paragonBonuses(p.paragon.alloc);
+  const eq = p.relics.eq.map((id) => p.relics.inv.find((r) => r.id === id)).filter((r): r is Relic => !!r);
+  const gems = gemBonuses(eq.flatMap((r) => r.sockets.filter((g): g is string => !!g)));
   return {
-    dmg: 0.05 * l('dmg'),
-    maxHp: 15 * l('hp'),
-    regen: 0.2 * l('regen'),
-    move: 0.05 * l('move'),
-    pickup: 0.2 * l('magnet'),
-    crit: 0.03 * l('crit'),
-    xp: 0.1 * l('xp'),
-    cd: 0.04 * l('cd'),
-    area: 0.06 * l('area'),
+    dmg: 0.05 * l('dmg') + pg.dmg + gems.dmg,
+    maxHp: 15 * l('hp') + pg.maxHp + gems.maxHp,
+    regen: 0.2 * l('regen') + pg.regen + gems.regen,
+    move: 0.05 * l('move') + pg.move,
+    pickup: 0.2 * l('magnet') + pg.pickup,
+    crit: 0.03 * l('crit') + pg.crit + gems.crit,
+    xp: 0.1 * l('xp') + pg.xp,
+    cd: 0.04 * l('cd') + pg.cd + gems.cd,
+    area: 0.06 * l('area') + pg.area + gems.area,
+    dur: pg.dur,
+    elemAll: gems.elem,
     rerolls: 1 + l('reroll'),
     revive: l('revive') > 0,
+    relicLegs: eq.map((r) => r.leg),
   };
 }
 
@@ -88,6 +97,11 @@ export const ACHIEVEMENTS: Achievement[] = [
   { id: 'endless', name: 'Бесконечность', desc: 'Продержись 20 минут в бесконечном режиме', reward: 600, check: (_p, r) => r.endless && r.time >= 1200 },
   { id: 'daily3', name: 'Ежедневник', desc: 'Пройди 3 испытания дня', reward: 300, check: (p) => p.daily.count >= 3 },
   { id: 'classes', name: 'Многоликий', desc: 'Победи тремя разными классами', reward: 400, check: (p) => p.classWins.length >= 3 },
+  { id: 'rift10', name: 'Покоритель порталов', desc: 'Закрой Великий портал 10', reward: 800, check: (p) => p.rift.best >= 10 },
+  { id: 'paragon20', name: 'Парагон', desc: 'Достигни 20 уровня парагона', reward: 500, check: (p) => paragonLevel(p.paragon.xp).lvl >= 20 },
+  { id: 'fusion3', name: 'Алхимик', desc: 'Открой 3 слияния школ', reward: 300, check: (p) => p.fusions.length >= 3 },
+  { id: 'relic2', name: 'Хранитель реликвий', desc: 'Надень две реликвии одновременно', reward: 200, check: (p) => p.relics.eq.every(Boolean) },
+  { id: 'lore10', name: 'Летописец', desc: 'Открой 10 записей бестиария', reward: 250, check: (p) => Object.keys(LORE).filter((n) => (p.bestiary[n] ?? 0) >= loreNeed(n, false)).length >= 10 },
 ];
 
 export interface Settlement {
@@ -100,6 +114,11 @@ export interface Settlement {
   unlockedLevel: string | null;
   unlockedClass: string | null;
   newBest: boolean;
+  relics: Relic[];
+  gems: string[];
+  pxp: number;
+  plevels: number;
+  riftNew: boolean;
 }
 
 // итог забега: осколки, звёзды, режимы, достижения; профиль сохраняется
@@ -116,10 +135,48 @@ export function settle(p: Profile, r: RunResult): Settlement {
   p.life.goblins += r.goblins;
   p.life.legends += r.legends;
   for (const w of r.weapons) if (!p.used.includes(w)) p.used.push(w);
+  for (const f of r.fusions) if (!p.fusions.includes(f)) p.fusions.push(f);
+  for (const [n, k] of Object.entries(r.killsBy)) p.bestiary[n] = (p.bestiary[n] ?? 0) + k;
+
+  // опыт парагона
+  const before = paragonLevel(p.paragon.xp).lvl;
+  const pxp = Math.round(r.kills + r.time * 3 + r.bosses * 300 + r.rift * 100);
+  p.paragon.xp += pxp;
+  const plevels = paragonLevel(p.paragon.xp).lvl - before;
+
+  // добыча: реликвии и камни
+  const relics: Relic[] = [];
+  const gems: string[] = [];
+  for (let k = 0; k < r.bosses; k++) {
+    if (Math.random() < 0.5) relics.push(newRelic());
+    gems.push(randomGem(Math.min(5, 1 + r.tier)));
+  }
+  for (let k = 0; k < r.goblins; k++) if (Math.random() < 0.3) gems.push(randomGem(1));
+  if (r.rift && r.riftWon) {
+    gems.push(randomGem(Math.min(5, 1 + Math.floor(r.rift / 5))));
+    if (Math.random() < 0.25) relics.push(newRelic());
+  }
+  if (r.daily && r.won) gems.push(randomGem(2));
+  let salvage = 0;
+  for (const rel of relics) {
+    if (p.relics.inv.length < 20) p.relics.inv.push(rel);
+    else salvage += 100;
+  }
+  for (const g of gems) p.gems[g] = (p.gems[g] ?? 0) + 1;
+
+  // Великие порталы
+  let riftNew = false;
+  if (r.rift) {
+    p.rift.last = r.riftWon ? r.rift + 1 : r.rift;
+    if (r.riftWon && r.rift > p.rift.best) {
+      p.rift.best = r.rift;
+      riftNew = true;
+    }
+  }
 
   let unlockedLevel: string | null = null;
   let unlockedClass: string | null = null;
-  if (r.won) {
+  if (r.won && !r.rift) {
     if (!p.won[r.level]) {
       p.won[r.level] = true;
       if (r.level + 1 < LEVELS.length) unlockedLevel = LEVELS[r.level + 1].name;
@@ -161,7 +218,8 @@ export function settle(p: Profile, r: RunResult): Settlement {
     }
   }
 
-  const gained = base + starShards + dailyBonus;
+  const riftShards = r.rift ? Math.round(r.rift * 40 * (r.riftWon ? 1 : 0.4)) : 0;
+  const gained = base + starShards + dailyBonus + salvage + riftShards;
   p.shards += gained;
   p.earned += gained;
 
@@ -174,8 +232,21 @@ export function settle(p: Profile, r: RunResult): Settlement {
     newAch.push(a);
   }
 
+  // рекорды
+  const mode = r.rift ? 'rift' : r.endless ? 'endless' : r.daily ? 'daily' : 'level';
+  const score = r.rift ? r.rift * 10000 + (r.riftWon ? 5000 : 0) - Math.round(r.time) : r.endless ? Math.round(r.time) : r.kills;
+  const lvlName = LEVELS[r.level].name;
+  const text = r.rift
+    ? `Портал ${r.rift} ${r.riftWon ? 'закрыт' : 'провален'} · ${lvlName}`
+    : r.endless
+      ? `${lvlName} · бесконечный · ${Math.floor(r.time / 60)} мин · боссов ${r.bosses}`
+      : `${lvlName} · ${TIERS[r.tier].name}${r.daily ? ' · день' : ''} · ${r.won ? 'победа' : 'поражение'} · ${r.kills} убийств`;
+  p.records.push({ mode, text, score, date: Date.now() });
+  p.records.sort((a, b) => b.score - a.score);
+  if (p.records.length > 60) p.records.length = 60;
+
   saveProfile(p);
   const total = gained + newAch.reduce((acc, a) => acc + a.reward, 0);
-  return { base, starShards, dailyBonus, newStars, newAch, total, unlockedLevel, unlockedClass, newBest };
+  return { base, starShards, dailyBonus, newStars, newAch, total, unlockedLevel, unlockedClass, newBest, relics, gems, pxp, plevels, riftNew };
 }
 

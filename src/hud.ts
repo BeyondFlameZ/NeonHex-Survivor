@@ -1,6 +1,8 @@
 import type { Settlement } from './meta';
 import { levelChallenges, LEVELS } from './levels';
 import { TIERS } from './modes';
+import { gemById, parseGem } from './relics';
+import { legendById } from './stats';
 import type { Profile, RunResult } from './save';
 
 export interface Card {
@@ -12,6 +14,7 @@ export interface Card {
   gold?: boolean;
   isNew?: boolean;
   rarity?: number;
+  fusion?: boolean;
 }
 
 export interface BuildInfo {
@@ -62,13 +65,17 @@ export class Hud {
   private wslots = $('wslots');
   private gslots = $('gslots');
   private dash = $('dash');
+  private ultBtn = $('ult');
+  private riftbar = $('riftbar');
+  private riftFill = $('rift-fill');
+  private riftTime = $('rift-time');
   private banner = $('banner');
   private bossbar = $('bossbar');
   private bossName = $('boss-name');
   private bossFill = $('boss-fill');
   private pause = $('pause');
   private results = $('results');
-  private c = { lvl: -1, sec: -1, kills: -1, xp: -1, dash: -1, boss: -1, bossLeft: -2, shards: -1 };
+  private c = { lvl: -1, sec: -1, kills: -1, xp: -1, dash: -1, boss: -1, bossLeft: -2, shards: -1, ult: -1, rift: -1, riftT: -1 };
   private onReroll: (() => void) | null = null;
   private queue: [string, string][] = [];
   private bannerBusy = false;
@@ -95,6 +102,39 @@ export class Hud {
     });
   }
 
+  bindUlt(fn: () => void) {
+    this.ultBtn.addEventListener('pointerdown', (e) => {
+      e.preventDefault();
+      fn();
+    });
+    window.addEventListener('keydown', (e) => {
+      if ((e.code === 'KeyQ' || e.code === 'KeyE') && !this.runUi.hidden) fn();
+    });
+  }
+
+  setUlt(frac: number) {
+    const v = Math.floor(Math.min(1, frac) * 40) / 40;
+    if (v === this.c.ult) return;
+    this.c.ult = v;
+    this.ultBtn.style.setProperty('--fill', `${v * 100}%`);
+    this.ultBtn.classList.toggle('ready', v >= 1);
+  }
+
+  setRift(prog: number, left: number) {
+    this.riftbar.hidden = false;
+    const v = Math.round(prog * 200) / 200;
+    if (v !== this.c.rift) {
+      this.c.rift = v;
+      this.riftFill.style.transform = `scaleX(${v})`;
+    }
+    const sec = Math.ceil(left);
+    if (sec !== this.c.riftT) {
+      this.c.riftT = sec;
+      this.riftTime.textContent = v >= 1 ? 'Страж призван' : `${Math.round(v * 100)}% · ${fmtTime(sec)}`;
+      this.riftTime.classList.toggle('low', sec <= 30);
+    }
+  }
+
   bindPause(h: { toggle: () => void; restart: () => void; quit: () => void }) {
     $('pausebtn').addEventListener('click', h.toggle);
     $('p-resume').addEventListener('click', h.toggle);
@@ -111,7 +151,8 @@ export class Hud {
   }
 
   reset() {
-    this.c = { lvl: -1, sec: -1, kills: -1, xp: -1, dash: -1, boss: -1, bossLeft: -2, shards: -1 };
+    this.c = { lvl: -1, sec: -1, kills: -1, xp: -1, dash: -1, boss: -1, bossLeft: -2, shards: -1, ult: -1, rift: -1, riftT: -1 };
+    this.riftbar.hidden = true;
     this.choice.hidden = true;
     this.pause.hidden = true;
     this.results.hidden = true;
@@ -269,7 +310,7 @@ export class Hud {
     this.choices.replaceChildren();
 
     cards.forEach((card, i) => {
-      const b = el('button', 'choice' + (card.gold ? ' gold' : '') + (card.rarity !== undefined ? ` r${card.rarity}` : '')) as HTMLButtonElement;
+      const b = el('button', 'choice' + (card.gold ? ' gold' : '') + (card.fusion ? ' fusion' : '') + (card.rarity !== undefined ? ` r${card.rarity}` : '')) as HTMLButtonElement;
       const head = el('span', 'choice-head');
       if (card.badge) {
         const badge = el('span', 'badge', card.badge.text);
@@ -306,9 +347,10 @@ export class Hud {
     this.choice.hidden = true;
     this.pause.hidden = true;
 
-    const mode = r.daily ? 'Испытание дня' : r.endless ? 'Бесконечный режим' : TIERS[r.tier].name;
+    const mode = r.rift ? `Великий портал ${r.rift}` : r.daily ? 'Испытание дня' : r.endless ? 'Бесконечный режим' : TIERS[r.tier].name;
+    const good = r.won || r.riftWon;
     box.append(
-      el('h2', 'title ' + (r.won ? 'gold' : 'blood'), r.won ? 'Победа' : r.endless ? 'Конец пути' : 'Сигнал потерян'),
+      el('h2', 'title ' + (good ? 'gold' : 'blood'), r.riftWon ? 'Портал закрыт' : r.rift ? 'Портал провален' : r.won ? 'Победа' : r.endless ? 'Конец пути' : 'Сигнал потерян'),
       el('p', 'sub', `${L.name} · ${mode} · ${fmtTime(r.time)} · уровень ${r.lvl} · убито ${r.kills}`),
     );
     if (r.endless) box.append(el('p', 'sub', `Боссов убито: ${r.bosses}${s.newBest ? ' · новый рекорд!' : ` · рекорд ${fmtTime(p.best[r.level])}`}`));
@@ -330,12 +372,28 @@ export class Hud {
     if (s.dailyBonus) loot.append(el('div', 'loot-line ach', `Испытание дня пройдено: +${s.dailyBonus}`));
     for (const a of s.newAch) loot.append(el('div', 'loot-line ach', `Достижение «${a.name}»: +${a.reward}`));
     loot.append(el('div', 'loot-total', `Итого: +${s.total} ◆`));
+    loot.append(el('div', 'loot-line', `Опыт парагона: +${s.pxp}${s.plevels ? ` · новых уровней: ${s.plevels}` : ''}`));
+    if (s.riftNew) loot.append(el('div', 'loot-line ach', `Новый рекорд порталов: ${r.rift}`));
+    for (const rel of s.relics) loot.append(el('div', 'loot-line legend', `Реликвия: ${legendById(rel.leg)?.name ?? rel.leg} (${rel.sockets.length} гн.)`));
+    for (const g of s.gems) {
+      const { id, lvl } = parseGem(g);
+      const line = el('div', 'loot-line', `Камень: ${gemById(id).name} ${lvl} ур.`);
+      line.style.color = gemById(id).css;
+      loot.append(line);
+    }
     if (s.unlockedClass) loot.append(el('div', 'loot-line unlock', `Открыт класс: ${s.unlockedClass}`));
     if (s.unlockedLevel) loot.append(el('div', 'loot-line unlock', `Открыта локация: ${s.unlockedLevel}`));
     if (r.won && r.tier < 2 && !r.daily) loot.append(el('div', 'loot-line unlock', `Доступна сложность «${TIERS[r.tier + 1].name}»`));
     box.append(loot);
 
     const btns = el('div', 'btn-row');
+    const share = el('button', 'btn ghost', 'Поделиться') as HTMLButtonElement;
+    share.addEventListener('click', () => {
+      const text = `Neon Hex · ${L.name} · ${mode} · ${fmtTime(r.time)} · убито ${r.kills}${r.riftWon ? ' · портал закрыт' : ''}\nhttps://beyondflamez.github.io/NeonHex-Survivor/`;
+      if (navigator.share) navigator.share({ text }).catch(() => undefined);
+      else navigator.clipboard?.writeText(text).catch(() => undefined);
+    });
+    btns.append(share);
     const map = el('button', 'btn', 'К карте') as HTMLButtonElement;
     const retry = el('button', 'btn primary', 'Заново') as HTMLButtonElement;
     map.addEventListener('click', h.toMap);

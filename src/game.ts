@@ -4,10 +4,14 @@ import { CFG, COL } from './config';
 import { SpatialGrid } from './grid';
 import type { Sound } from './audio';
 import { classById, type ClassDef } from './classes';
+import { rollAffixes, AF } from './elites';
+import { FUSIONS } from './fusions';
+import { skinById } from './skins';
+import { PROP } from './art';
 import type { BuildInfo, Card, Hud } from './hud';
 import type { Input } from './input';
 import { B, ELITE_AT, GOBLIN, LEVELS, UNLOCK_AT, WEIGHT, type EnemyDef, type LevelDef } from './levels';
-import { TIERS, type RunOpts, type Tier } from './modes';
+import { RIFT_TIME, riftDmg, riftHp, TIERS, type RunOpts, type Tier } from './modes';
 import { metaBonuses } from './meta';
 import { DamageNumbers } from './numbers';
 import { Pool } from './pool';
@@ -37,12 +41,13 @@ import { F_NOFX, F_NOKB, F_NONUM, F_NOSET, type Weapon, type WeaponDef } from '.
 type EK =
   | 'x' | 'y' | 'hp' | 'mhp' | 'spd' | 'r' | 'xp' | 'flash' | 'kx' | 'ky' | 'dcd' | 'type' | 'ph'
   | 'burn' | 'bdps' | 'stun' | 'chill' | 'frz' | 'inf' | 'idps' | 'stz' | 'sacc'
-  | 'ai' | 'st' | 'vx' | 'vy' | 'dmg' | 'kbr' | 'elite' | 'gen' | 'sc';
+  | 'ai' | 'st' | 'vx' | 'vy' | 'dmg' | 'kbr' | 'elite' | 'gen' | 'sc' | 'aff' | 'at';
 type BK = 'x' | 'y' | 'vx' | 'vy' | 'life' | 'dmg' | 'pierce' | 'last' | 'elem' | 'aoe';
 type SK = 'x' | 'y' | 'vx' | 'vy' | 'life' | 'dmg';
 type GK = 'x' | 'y' | 'v' | 'val' | 'mag';
 type PK = 'x' | 'y' | 'vx' | 'vy' | 'life' | 'max';
 type GBK = PK | 'z' | 'vz';
+type CK = 'x' | 'y' | 'life' | 'max' | 'sc' | 'flip';
 type DK = 'x' | 'y' | 'life';
 type IK = 'x' | 'y' | 't';
 type HK = 'x' | 'y' | 'life' | 'max';
@@ -56,7 +61,8 @@ type PickKind = 'heal' | 'chest' | 'lchest' | 'shrine' | 'fountain' | 'shard';
 interface Pickup { kind: PickKind; x: number; y: number; life: number; s: Sprite }
 interface Decoy { x: number; y: number; life: number; max: number; dmg: number; r: number; s: Sprite }
 interface Option { card: Card; act: () => void }
-interface PropSpr { s: Sprite; light: number; x: number; y: number; anim: Texture[] | null }
+interface PropSpr { s: Sprite; light: number; x: number; y: number; anim: Texture[] | null; kind: string; key: string; r: number }
+interface Trap { x: number; y: number; phase: number; fired: number }
 
 const TAU = Math.PI * 2;
 const OCT = Math.PI / 4;
@@ -66,6 +72,10 @@ const MAX_WEAPONS = 6;
 const CHUNK = 320;
 const BOSS = 9;
 const GOB = 10;
+const ULT_KILLS = 150;
+const SOLID_CELL = 64;
+// радиус коллизии высоких декораций (по ширине пиксельной карты)
+const solidR = (kind: string) => (PROP[kind]?.[0].length ?? 8) * PX * 0.36;
 // пресеты яркости из настроек: тёмная / обычная / яркая
 const LOOK = [
   { ground: 0.8, vig: 1, glow: 0.24, fog: 0.14 },
@@ -122,6 +132,29 @@ export class Game {
   private chaosT = 30;
   private dailyEliteT = 60;
   private endlessEliteT = 120;
+  private ult = 0;
+  private ultT = 0;
+  private ultTick = 0;
+  private slowT = 0;
+  private zoomT = 0;
+  private chill = 0;
+  private fusions = new Set<string>();
+  private teslaHits = 0;
+  private killsBy: Record<string, number> = {};
+  private ultUses = 0;
+  private rift: number;
+  private riftT = RIFT_TIME;
+  private riftProg = 0;
+  private riftWon = false;
+  private riftFail = -1;
+  private relicLegs: string[];
+  private solids: { x: number; y: number; r: number }[] = [];
+  private solidGrid = new Map<number, number[]>();
+  private breakables: PropSpr[] = [];
+  private traps: Trap[] = [];
+  private broken = new Set<string>();
+  private worldDirty = true;
+  private corpses!: Pool<CK>;
   private roster: EnemyDef[];
   private eyeCol: number[];
   private meta: ReturnType<typeof metaBonuses>;
@@ -258,14 +291,17 @@ export class Game {
     this.T = TIERS[opts.tier] ?? TIERS[0];
     this.cls = classById(opts.cls);
     this.mods = new Set(opts.daily ?? []);
-    this.nextBoss = this.L.bossAt;
+    this.rift = opts.rift ?? 0;
+    this.nextBoss = this.rift ? Infinity : this.L.bossAt;
     this.goblinAt = [75 + Math.random() * 30, 250 + Math.random() * 40];
     this.roster = [...this.L.enemies, this.L.boss, GOBLIN];
     this.eyeCol = this.roster.map((d) => tex.hexNum(d.pal[2]));
     this.meta = metaBonuses(profile);
     const cm = this.cls.mods;
-    const elem = [0, 0, 0, 0, 0, 0];
+    const elem = [0, 0, 0, 0, 0, 0].map(() => this.meta.elemAll);
     if (cm.elem) elem[cm.elem[0]] += cm.elem[1];
+    this.relicLegs = this.meta.relicLegs;
+    this.legs = new Set(this.relicLegs);
     this.extra = {
       dmg: this.meta.dmg + (cm.dmg ?? 0),
       maxHp: this.meta.maxHp + (cm.maxHp ?? 0),
@@ -275,9 +311,13 @@ export class Game {
       crit: this.meta.crit,
       cd: this.meta.cd,
       area: this.meta.area + (cm.area ?? 0),
-      dur: cm.dur ?? 0,
+      dur: (cm.dur ?? 0) + this.meta.dur,
       elem,
     };
+    if (this.rift) {
+      this.T = TIERS[0];
+      this.bossHp = 0.6 * riftHp(this.rift);
+    }
     this.stats = this.calcStats();
     this.hp = this.stats.maxHp;
     this.rerolls = this.meta.rerolls + (cm.rerolls ?? 0);
@@ -298,7 +338,8 @@ export class Game {
     this.glow.alpha = this.look.glow;
     this.glow.scale.set(3.2);
 
-    this.mageTex = tex.mageFrames(this.cls.pal);
+    const skin = skinById(profile.skin);
+    this.mageTex = tex.mageFrames(skin && skin.req(profile) ? skin.pal : this.cls.pal);
     this.mechTex = tex.mechFrames();
     this.minionTex = tex.minionFrames();
     this.enemyTex = this.roster.map((d) => tex.enemyFrames(d));
@@ -321,7 +362,7 @@ export class Game {
     this.gems = new Pool<GK>(CFG.maxGems, ['x', 'y', 'v', 'val', 'mag'], tex.crystalTex(), gemLayer, 'normal', PX);
     this.enemies = new Pool<EK>(
       CFG.maxEnemies,
-      ['x', 'y', 'hp', 'mhp', 'spd', 'r', 'xp', 'flash', 'kx', 'ky', 'dcd', 'type', 'ph', 'burn', 'bdps', 'stun', 'chill', 'frz', 'inf', 'idps', 'stz', 'sacc', 'ai', 'st', 'vx', 'vy', 'dmg', 'kbr', 'elite', 'gen', 'sc'],
+      ['x', 'y', 'hp', 'mhp', 'spd', 'r', 'xp', 'flash', 'kx', 'ky', 'dcd', 'type', 'ph', 'burn', 'bdps', 'stun', 'chill', 'frz', 'inf', 'idps', 'stz', 'sacc', 'ai', 'st', 'vx', 'vy', 'dmg', 'kbr', 'elite', 'gen', 'sc', 'aff', 'at'],
       this.enemyTex[0][0],
       this.actors,
       'normal',
@@ -333,6 +374,8 @@ export class Game {
     this.minions = new Pool<MK>(CFG.maxMinions, ['x', 'y', 'life', 'dmg', 'ai', 'tg'], this.minionTex[0], this.actors, 'normal', PX);
     this.gibs = new Pool<GBK>(CFG.maxGibs, ['x', 'y', 'vx', 'vy', 'life', 'max', 'z', 'vz'], pixel, gibLayer, 'normal', PX);
     this.sparks = new Pool<PK>(CFG.maxSparks, ['x', 'y', 'vx', 'vy', 'life', 'max'], pixel, sparkLayer, 'add', PX);
+    const corpseLayer = new Container();
+    this.corpses = new Pool<CK>(120, ['x', 'y', 'life', 'max', 'sc', 'flip'], this.enemyTex[0][0], corpseLayer, 'normal', PX);
     this.impacts = new Pool<IK>(CFG.maxImpacts, ['x', 'y', 't'], this.impactTex[0], impactLayer, 'add', PX);
     this.numbers = new DamageNumbers(CFG.maxNumbers, numberLayer, tex.digitTextures());
 
@@ -393,6 +436,7 @@ export class Game {
       this.groundG,
       this.propLayer,
       this.layerGround,
+      corpseLayer,
       gemLayer,
       ghostLayer,
       this.actors,
@@ -419,7 +463,7 @@ export class Game {
     this.root.addChild(this.scene, this.vignette, this.hurtOverlay, this.screenG);
 
     this.addWeapon(byId(this.cls.start) ?? ARSENAL[0]);
-    const tag = opts.daily ? 'Испытание дня' : opts.endless ? 'Бесконечный режим' : this.T.name;
+    const tag = this.rift ? `Великий портал ${this.rift}` : opts.daily ? 'Испытание дня' : opts.endless ? 'Бесконечный режим' : this.T.name;
     this.hud.announce(`${this.L.name} · ${tag}`, '#ffc94a');
     if (profile.life.runs === 0) {
       this.hud.announce('Веди пальцем по экрану — оружие стреляет само', '#e8dcc4');
@@ -436,7 +480,10 @@ export class Game {
   }
 
   frame(dt: number) {
-    this.acc += Math.min(dt, 0.1);
+    const real = Math.min(dt, 0.1);
+    if (this.slowT > 0) this.slowT -= real;
+    if (this.zoomT > 0) this.zoomT -= real;
+    this.acc += real * (this.slowT > 0 && !this.paused ? 0.3 : 1);
     while (this.acc >= CFG.dt) {
       this.update(CFG.dt);
       this.acc -= CFG.dt;
@@ -451,6 +498,77 @@ export class Game {
     this.sfx.duck(this.userPaused);
     if (this.userPaused) this.hud.showPause(this.buildInfo());
     else this.hud.hidePause();
+  }
+
+  // ульта класса: копится с убийств, срабатывает по кнопке
+  useUlt() {
+    if (this.paused || this.over || this.ult < 1) return;
+    this.ult = 0;
+    this.ultUses++;
+    this.ultT = this.cls.id === 'cyber' ? 3 : this.cls.id === 'pyro' ? 4 : this.cls.id === 'tech' ? 2 : 0.01;
+    this.ultTick = 0;
+    this.hud.announce(this.cls.ult.name, this.cls.pal.t);
+    this.sfx.evolve();
+    this.slowT = 0.35;
+    this.zoomT = 0.5;
+    this.addShake(8);
+    this.flash(this.px, this.py, 400, 1.6, tex.hexNum(this.cls.pal.t), 0.5);
+    const f = this.enemies.f;
+    const inView = (j: number) => Math.abs(f.x[j] - this.px) < this.viewHW && Math.abs(f.y[j] - this.py) < this.viewHH;
+    if (this.cls.id === 'cryo') {
+      for (let j = 0; j < this.enemies.n; j++) {
+        if (f.hp[j] <= 0 || !inView(j)) continue;
+        this.freeze(j, 5);
+        this.hit(j, 80 * this.dmgMul(2), 0, 0, 2, F_NOFX | F_NONUM | F_NOSET);
+      }
+      this.impact(this.px, this.py, SCHOOLS.kinetic.color, PX * 10);
+    } else if (this.cls.id === 'necro') {
+      for (let k = 0; k < 8; k++) {
+        const a = (k / 8) * TAU;
+        this.spawnMinion(this.px + Math.cos(a) * 50, this.py + Math.sin(a) * 50, 25 * this.dmgMul(3), 12);
+      }
+    } else if (this.cls.id === 'glitch') {
+      for (let j = 0; j < this.enemies.n; j++) if (f.hp[j] > 0 && inView(j)) this.stasis(j, 4);
+      this.impact(this.px, this.py, SCHOOLS.glitch.color, PX * 10);
+    }
+  }
+
+  private updateUlt(dt: number) {
+    this.ult = Math.min(1, this.ult + dt * 0.002);
+    if (this.ultT <= 0) return;
+    this.ultT -= dt;
+    this.ultTick -= dt;
+    if (this.ultTick > 0) return;
+    const f = this.enemies.f;
+    if (this.cls.id === 'cyber') {
+      this.ultTick = 0.12;
+      const j = this.randomInView();
+      if (j >= 0) this.orbital(f.x[j], f.y[j], 50 * this.areaMul(), 60 * this.dmgMul(0), COL.arcane, 0, F_NOSET);
+    } else if (this.cls.id === 'pyro') {
+      this.ultTick = 0.15;
+      const a = Math.random() * TAU;
+      const rr = Math.random() * 220;
+      const x = this.px + Math.cos(a) * rr;
+      const y = this.py + Math.sin(a) * rr;
+      this.aoe(x, y, 55 * this.areaMul(), 70 * this.dmgMul(1), 1, F_NONUM, (j) => this.burn(j, 3, 20 * this.dmgMul(1)));
+      this.impact(x, y, SCHOOLS.pyro.color, PX * 5);
+      this.flash(x, y, 200, 1.2, SCHOOLS.pyro.color, 0.2);
+      this.zone(x, y, 40, 2, 25 * this.dmgMul(1), 1, SCHOOLS.pyro.color);
+      this.sfx.boom();
+    } else if (this.cls.id === 'tech') {
+      this.ultTick = 0.33;
+      const j = this.densest();
+      if (j >= 0) {
+        const x = f.x[j];
+        const y = f.y[j];
+        this.pillars.push({ x, y, color: COL.gold, life: 0.4, max: 0.4, w: 34 });
+        this.aoe(x, y, 90 * this.areaMul(), 150 * this.dmgMul(4), 4);
+        this.impact(x, y, COL.gold, PX * 8);
+        this.flash(x, y, 300, 1.6, COL.gold, 0.3);
+        this.addShake(6);
+        this.sfx.boom(true);
+      }
+    }
   }
 
   quit() {
@@ -488,7 +606,7 @@ export class Game {
     return this.stats.amount;
   }
   private calcStats() {
-    const s = computeStats(this.gear, this.extra);
+    const s = computeStats(this.gear, this.extra, this.relicLegs);
     if (this.mods.has('glass')) s.maxHp = Math.round(s.maxHp * 0.5);
     if (this.mods.has('noregen')) s.regen = 0;
     return s;
@@ -645,6 +763,10 @@ export class Game {
   hit(j: number, dmg: number, nx: number, ny: number, elem: number, flags = 0): boolean {
     const f = this.enemies.f;
     if (f.hp[j] <= 0) return false;
+    if (f.aff[j] & AF.shield && f.at[j] % 6 < 2) {
+      if ((this.tick + j) % 6 === 0) this.spark(f.x[j], f.y[j] - 10, (Math.random() - 0.5) * 80, -40, 0.2, COL.gold);
+      return false;
+    }
     const crit = Math.random() < this.stats.crit;
     let d = crit ? dmg * 2.2 : dmg;
     if (f.frz[j] > 0 && this.setCounts.kinetic >= 2) d *= 1.5;
@@ -686,20 +808,39 @@ export class Game {
       this.aoe(f.x[j], f.y[j], 40 * this.areaMul(), d * 0.4, elem, F_NOSET | F_NONUM);
       this.impact(f.x[j], f.y[j], COL.gold, PX * 2);
     }
-    if (!(flags & F_NOSET) && this.legs.has('thunder') && ++this.legHits % 8 === 0) this.chainThunder(j);
+    if (!(flags & F_NOSET) && this.legs.has('thunder') && ++this.legHits % 8 === 0) this.chainThunder(j, 4);
+    if (this.fusions.size && !(flags & F_NOSET)) this.fusionHit(j, d, elem);
     if (elem === 0 && !(flags & F_NOSET) && this.setCounts.electro >= 4 && ++this.elecHits % 10 === 0) {
       this.orbital(f.x[j], f.y[j], 36 * this.areaMul(), 20 * this.dmgMul(0), COL.arcane, 0, F_NOSET);
     }
     return f.hp[j] <= 0;
   }
 
-  private chainThunder(from: number) {
+  private fusionHit(j: number, d: number, elem: number) {
+    const f = this.enemies.f;
+    const fu = this.fusions;
+    if (fu.has('plasma')) {
+      if (elem === 0) this.burn(j, 2, 6 * this.dmgMul(1));
+      else if (elem === 1) this.stun(j, 0.12);
+    }
+    if (fu.has('thermo') && elem === 1 && f.frz[j] > 0) {
+      f.frz[j] = 0;
+      f.hp[j] -= d * 1.5;
+      this.impact(f.x[j], f.y[j], SCHOOLS.kinetic.color, PX * 3);
+      this.number(f.x[j], f.y[j] - 22, d * 1.5, true);
+    }
+    if (fu.has('phantom') && elem === 5) this.infect(j, 3, 5 * this.dmgMul(3));
+    if (fu.has('rift') && elem === 5) this.freeze(j, 1);
+    if (fu.has('teslaswarm') && elem === 4 && ++this.teslaHits % 4 === 0) this.chainThunder(j, 2);
+  }
+
+  private chainThunder(from: number, count: number) {
     const f = this.enemies.f;
     const except = new Set([from]);
     let x = f.x[from];
     let y = f.y[from];
     const dmg = 25 * this.dmgMul(0);
-    for (let k = 0; k < 4; k++) {
+    for (let k = 0; k < count; k++) {
       const t = this.nearest(x, y, 160, except);
       if (t < 0) break;
       except.add(t);
@@ -928,7 +1069,7 @@ export class Game {
   // ================= игрок =================
 
   private hurtPlayer(dmg: number) {
-    if (this.iframes > 0 || this.dashT > 0 || this.mechT > 0 || this.over || this.victoryT >= 0) return;
+    if (this.iframes > 0 || this.dashT > 0 || this.mechT > 0 || this.over || this.victoryT >= 0) return false;
     this.hp -= dmg;
     this.sfx.hurt();
     this.iframes = CFG.player.iframes;
@@ -937,6 +1078,7 @@ export class Game {
     this.flash(this.px, this.py, 150, 1, COL.blood, 0.2);
     this.stop(0.07);
     this.run.minHp = Math.min(this.run.minHp, Math.max(0, this.hp) / this.stats.maxHp);
+    return true;
   }
 
   // ================= цикл =================
@@ -956,7 +1098,8 @@ export class Game {
     const s = this.stats;
     const mx = this.input.mx;
     const my = this.input.my;
-    const speed = CFG.player.speed * (1 + s.move + (this.haste > 0 ? 0.3 : 0)) * (this.mechT > 0 ? 1.35 : 1);
+    const speed = CFG.player.speed * (1 + s.move + (this.haste > 0 ? 0.3 : 0)) * (this.mechT > 0 ? 1.35 : 1) * (this.chill > 0 ? 0.6 : 1);
+    if (this.chill > 0) this.chill -= dt;
 
     if (mx !== 0 || my !== 0) {
       const l = Math.hypot(mx, my);
@@ -977,6 +1120,7 @@ export class Game {
       this.py += my * speed * dt;
     }
     this.moving = mx !== 0 || my !== 0 || this.dashT > 0;
+    this.collidePlayer();
     if (this.dashT <= 0) {
       if (mx > 0.05) this.face = 1;
       else if (mx < -0.05) this.face = -1;
@@ -992,6 +1136,8 @@ export class Game {
     if (this.phoenixCd > 0) this.phoenixCd -= dt;
     this.updateLegends(dt);
     this.updateDailyMods(dt);
+    this.updateUlt(dt);
+    this.updateWorld(dt);
 
     if (this.conduit > 0) {
       this.conduit -= dt;
@@ -1022,6 +1168,7 @@ export class Game {
     this.updatePickups(dt);
     this.updateFx(this.sparks, dt, 0.9);
     this.updateGibs(dt);
+    this.updateTimed(this.corpses, dt);
     this.updateTimed(this.decals, dt);
     this.updateTimed(this.ghosts, dt);
     this.updateImpacts(dt);
@@ -1039,6 +1186,11 @@ export class Game {
     if (this.victoryT >= 0) {
       this.victoryT -= dt;
       if (this.victoryT < 0) this.end(true);
+      return;
+    }
+    if (this.riftFail >= 0) {
+      this.riftFail -= dt;
+      if (this.riftFail < 0) this.end(false);
       return;
     }
 
@@ -1106,9 +1258,29 @@ export class Game {
         const type = this.pickType();
         this.ringPoint();
         this.spawnEnemy(type, this.tmpX, this.tmpY, 1, 0);
-        this.hud.announce(`Элита: ${this.roster[type].name}`, '#ffc94a');
       }
     }
+  }
+
+  private updateRift(dt: number) {
+    if (this.riftWon) return;
+    this.riftT -= dt;
+    if (this.riftProg >= 1 && !this.bossSpawned) {
+      this.bossSpawned = true;
+      const a = Math.random() * TAU;
+      this.spawnEnemy(BOSS, this.px + Math.cos(a) * 300, this.py + Math.sin(a) * 300, 0, 0);
+      this.hud.announce(`Страж портала: ${this.L.boss.title}`, '#ff2d55');
+      this.hud.showBoss(`Страж: ${this.L.boss.title}`);
+      this.sfx.boss();
+      this.sfx.intensity(1);
+      this.slowT = 0.8;
+      this.zoomT = 1.2;
+    }
+    if (this.riftT <= 0 && this.riftFail < 0) {
+      this.hud.announce('Время вышло — портал схлопывается', '#ff5a5a');
+      this.riftFail = 2.5;
+    }
+    this.hud.setRift(Math.min(1, this.riftProg), Math.max(0, this.riftT));
   }
 
   private spawnGoblin() {
@@ -1154,7 +1326,7 @@ export class Game {
     else this.sfx.defeat();
     this.onEnd({
       level: this.levelIdx,
-      won,
+      won: won && !this.rift,
       time: this.time,
       kills: this.kills,
       lvl: this.level,
@@ -1174,6 +1346,11 @@ export class Game {
       goblins: this.run.goblins,
       bosses: this.run.bosses,
       legends: this.run.legends,
+      rift: this.rift,
+      riftWon: this.riftWon,
+      killsBy: this.killsBy,
+      fusions: [...this.fusions],
+      ults: this.ultUses,
     });
   }
 
@@ -1254,7 +1431,8 @@ export class Game {
     const t = this.time;
     const L = this.L;
     if (this.victoryT < 0) {
-      let rate = Math.min(45 * L.rate, (1.2 + (t / 60) * 5.5) * L.rate) * this.T.rate * (this.mods.has('swarm') ? 1.6 : 1);
+      const te = this.rift ? t + 150 : t;
+      let rate = Math.min(45 * L.rate, (1.2 + (te / 60) * 5.5) * L.rate) * this.T.rate * (this.mods.has('swarm') ? 1.6 : 1) * (this.rift ? 1.3 : 1);
       if (this.bossSpawned) rate *= 0.35;
       this.spawnAcc += rate * dt;
       while (this.spawnAcc >= 1) {
@@ -1263,6 +1441,8 @@ export class Game {
         this.spawnEnemy(this.pickType(), this.tmpX, this.tmpY, 0, 0);
       }
     }
+
+    if (this.rift) this.updateRift(dt);
 
     if (t >= this.nextWave && !this.bossSpawned) {
       this.nextWave += 60;
@@ -1282,7 +1462,6 @@ export class Game {
       const type = this.pickType();
       this.ringPoint();
       this.spawnEnemy(type, this.tmpX, this.tmpY, 1, 0);
-      this.hud.announce(`Элита: ${this.roster[type].name}`, '#ffc94a');
     }
 
     if (!this.bossSpawned && t >= this.nextBoss) {
@@ -1294,6 +1473,8 @@ export class Game {
       this.addShake(8);
       this.sfx.boss();
       this.sfx.intensity(1);
+      this.slowT = 0.8;
+      this.zoomT = 1.2;
     }
     // в бесконечном режиме после первого босса элита приходит каждые 2 минуты
     if (this.opts.endless && t > 480) {
@@ -1303,7 +1484,6 @@ export class Game {
         const type = this.pickType();
         this.ringPoint();
         this.spawnEnemy(type, this.tmpX, this.tmpY, 1, 0);
-        this.hud.announce(`Элита: ${this.roster[type].name}`, '#ffc94a');
       }
     }
     while (this.goblinAt.length && t >= this.goblinAt[0]) {
@@ -1332,7 +1512,7 @@ export class Game {
     const giant = this.mods.has('giants') && !boss && type !== GOB;
     const sizeMul = (elite ? 1.4 : 1) * (gen ? 0.65 : 1) * (giant ? 1.3 : 1);
     const hpScale =
-      (boss ? this.bossHp * this.T.boss : this.L.hpMul * (1 + t / 240) * this.T.hp) * (this.mods.has('swarm') ? 0.7 : 1) * (giant ? 1.5 : 1) * (type === GOB ? 8 : 1);
+      (boss ? this.bossHp * this.T.boss : this.L.hpMul * (1 + (this.rift ? t + 150 : t) / 240) * this.T.hp * (this.rift ? riftHp(this.rift) : 1)) * (this.mods.has('swarm') ? 0.7 : 1) * (giant ? 1.5 : 1) * (type === GOB ? 8 : 1);
     const f = e.f;
     f.x[i] = x;
     f.y[i] = y;
@@ -1341,15 +1521,21 @@ export class Game {
     f.r[i] = d.r * sizeMul;
     f.sc[i] = (d.size ?? 1) * sizeMul;
     f.xp[i] = (d.xp ?? 1) * (elite ? 15 : 1) * (giant ? 1.5 : 1);
-    f.dmg[i] = d.dmg * this.L.dmgMul * this.T.dmg;
+    f.dmg[i] = d.dmg * this.L.dmgMul * this.T.dmg * (this.rift ? riftDmg(this.rift) : 1);
     f.kbr[i] = (d.kbr ?? 1) * (elite ? 0.4 : 1);
     f.type[i] = type;
     f.elite[i] = elite;
     f.gen[i] = gen;
     f.ph[i] = Math.random() * 2;
     f.ai[i] = type === GOB ? 25 : (d.cd ?? 2) * (0.5 + Math.random() * 0.5);
-    for (const k of ['flash', 'kx', 'ky', 'dcd', 'burn', 'bdps', 'stun', 'chill', 'frz', 'inf', 'idps', 'stz', 'sacc', 'st', 'vx', 'vy'] as const) {
+    for (const k of ['flash', 'kx', 'ky', 'dcd', 'burn', 'bdps', 'stun', 'chill', 'frz', 'inf', 'idps', 'stz', 'sacc', 'st', 'vx', 'vy', 'aff', 'at'] as const) {
       f[k][i] = 0;
+    }
+    if (elite) {
+      const { mask, names } = rollAffixes(1 + this.opts.tier + Math.floor(this.rift / 10));
+      f.aff[i] = mask;
+      if (mask & AF.fast) f.spd[i] *= 1.6;
+      this.hud.announce(`Элита: ${names.join(' ')} ${d.name}`, '#ffc94a');
     }
     return i;
   }
@@ -1457,6 +1643,7 @@ export class Game {
         continue;
       }
 
+      if (f.aff[i]) this.affixTick(i, dt, pd);
       const slow = 1 - Math.min(0.6, chill[i] * 0.12);
       const sp = spd[i] * slow;
       let mvx = ux * sp;
@@ -1608,16 +1795,158 @@ export class Game {
       y[i] += (mvy + ky[i]) * dt;
       kx[i] *= 0.85;
       ky[i] *= 0.85;
+      if (separate && (i & 1) === parity && this.solids.length) this.collide(i);
 
       if (pd < r[i] + pr && f.dmg[i] > 0) {
+        let landed: boolean;
         if (this.legs.has('frost') && tp !== BOSS) {
           this.freeze(i, 5);
-          this.hurtPlayer(f.dmg[i] * timeDmg * 0.7);
-        } else this.hurtPlayer(f.dmg[i] * timeDmg);
+          landed = this.hurtPlayer(f.dmg[i] * timeDmg * 0.7);
+        } else landed = this.hurtPlayer(f.dmg[i] * timeDmg);
+        if (landed && f.aff[i] & AF.vampire) f.hp[i] = Math.min(f.mhp[i], f.hp[i] + f.mhp[i] * 0.25);
       }
     }
 
     if (this.bossSpawned && this.bossI >= 0) this.hud.setBoss(f.hp[this.bossI] / f.mhp[this.bossI]);
+  }
+
+  private affixTick(i: number, dt: number, pd: number) {
+    const f = this.enemies.f;
+    const a = f.aff[i];
+    const prev = f.at[i];
+    f.at[i] += dt;
+    const t = f.at[i];
+    const every = (p: number) => Math.floor(t / p) !== Math.floor(prev / p);
+    const x = f.x[i];
+    const y = f.y[i];
+    if (a & AF.fire && every(0.4)) this.hazard(x, y, 24, 0.35, 1.5, f.dmg[i] * 0.8, 0xff7a2d);
+    if (a & AF.frost && pd < 110) {
+      this.chill = 0.3;
+      if (((this.tick + i) & 7) === 0) this.spark(this.px, this.py - 6, (Math.random() - 0.5) * 60, -30, 0.3, 0x9ad8ff);
+    }
+    if (a & AF.vampire) f.hp[i] = Math.min(f.mhp[i], f.hp[i] + f.mhp[i] * 0.02 * dt);
+    if (a & AF.teleport && every(4) && pd < 500) {
+      this.impact(x, y, 0xc46bff, PX * 3);
+      const ang = Math.random() * TAU;
+      f.x[i] = this.px + Math.cos(ang) * 110;
+      f.y[i] = this.py + Math.sin(ang) * 110;
+      this.impact(f.x[i], f.y[i], 0xc46bff, PX * 3);
+    }
+    if (a & AF.arcane && every(3) && pd < 450) {
+      for (let k = 0; k < 10; k++) {
+        const b = (k / 10) * TAU + t;
+        this.enemyShoot(x, y - 6, Math.cos(b) * 140, Math.sin(b) * 140, f.dmg[i] * 0.5, 0x3ef0ff);
+      }
+    }
+  }
+
+  // ---------- препятствия, разрушаемое, ловушки ----------
+
+  private collidePlayer() {
+    for (const o of this.solids) {
+      const dx = this.px - o.x;
+      const dy = this.py + 6 - o.y;
+      const rr = o.r + 8;
+      const d2 = dx * dx + dy * dy;
+      if (d2 >= rr * rr || d2 < 1e-6) continue;
+      const d = Math.sqrt(d2);
+      this.px += (dx / d) * (rr - d);
+      this.py += (dy / d) * (rr - d);
+    }
+  }
+
+  private collide(i: number) {
+    const f = this.enemies.f;
+    const key = Math.floor(f.x[i] / SOLID_CELL) * 73856093 + Math.floor(f.y[i] / SOLID_CELL);
+    const list = this.solidGrid.get(key);
+    if (!list) return;
+    for (const k of list) {
+      const o = this.solids[k];
+      const dx = f.x[i] - o.x;
+      const dy = f.y[i] + 6 - o.y;
+      const rr = o.r + f.r[i] * 0.7;
+      const d2 = dx * dx + dy * dy;
+      if (d2 >= rr * rr || d2 < 1e-6) continue;
+      const d = Math.sqrt(d2);
+      f.x[i] += (dx / d) * (rr - d);
+      f.y[i] += (dy / d) * (rr - d);
+    }
+  }
+
+  private rebuildWorld() {
+    this.worldDirty = false;
+    this.solids = [];
+    this.solidGrid.clear();
+    this.breakables = [];
+    this.traps = [];
+    for (const list of this.chunks.values()) {
+      for (const p of list) {
+        if (!p.s.visible) continue;
+        if (p.kind === 'urn' || p.kind === 'barrel') this.breakables.push(p);
+        else if (p.kind === 'trap') this.traps.push({ x: p.x, y: p.y, phase: hash(p.x | 0, p.y | 0, 9) * 3.6, fired: -1 });
+        else if (p.r > 0) {
+          const k = this.solids.length;
+          this.solids.push({ x: p.x, y: p.y - 4, r: p.r });
+          const reach = p.r + CFG.enemyMaxR;
+          for (let gx = Math.floor((p.x - reach) / SOLID_CELL); gx <= Math.floor((p.x + reach) / SOLID_CELL); gx++) {
+            for (let gy = Math.floor((p.y - reach) / SOLID_CELL); gy <= Math.floor((p.y + reach) / SOLID_CELL); gy++) {
+              const key = gx * 73856093 + gy;
+              const arr = this.solidGrid.get(key);
+              if (arr) arr.push(k);
+              else this.solidGrid.set(key, [k]);
+            }
+          }
+        }
+      }
+    }
+  }
+
+  private updateWorld(dt: number) {
+    void dt;
+    if (this.worldDirty) this.rebuildWorld();
+    for (const b of this.breakables) {
+      if (!b.s.visible) continue;
+      if (Math.hypot(this.px - b.x, this.py + 4 - b.y) > 18) continue;
+      this.breakProp(b);
+    }
+    const t = this.time;
+    const trapDmg = 25 * this.L.hpMul * (1 + t / 240) * this.T.hp;
+    for (const tr of this.traps) {
+      const cyc = Math.floor((t + tr.phase) / 3.6);
+      const ph = (t + tr.phase) % 3.6;
+      if (ph > 2.8 && cyc !== tr.fired) {
+        tr.fired = cyc;
+        const col = tex.hexNum(this.L.ground.glow);
+        this.aoe(tr.x, tr.y, 30, trapDmg, 1, F_NONUM);
+        if (Math.hypot(this.px - tr.x, this.py - tr.y) < 26) this.hurtPlayer(14 * this.L.dmgMul * this.T.dmg);
+        this.pillars.push({ x: tr.x, y: tr.y, color: col, life: 0.25, max: 0.25, w: 14 });
+        this.impact(tr.x, tr.y, col, PX * 3);
+        this.flash(tr.x, tr.y, 140, 1, col, 0.2);
+      }
+    }
+  }
+
+  private breakProp(b: PropSpr) {
+    b.s.visible = false;
+    this.broken.add(b.key);
+    this.worldDirty = true;
+    this.burst(b.x, b.y - 6, 12, -1);
+    if (b.kind === 'barrel') {
+      this.aoe(b.x, b.y, 90 * this.areaMul(), 120 * this.dmgMul(1), 1, 0, (j) => this.burn(j, 3, 20 * this.dmgMul(1)));
+      this.impact(b.x, b.y, SCHOOLS.pyro.color, PX * 7);
+      this.flash(b.x, b.y, 280, 1.5, SCHOOLS.pyro.color, 0.3);
+      this.addShake(6);
+      this.sfx.boom(true);
+      return;
+    }
+    this.sfx.kill();
+    const roll = Math.random();
+    if (roll < 0.6) for (let k = 0; k < 3 + ((Math.random() * 4) | 0); k++) this.dropGem(b.x + (Math.random() - 0.5) * 30, b.y + (Math.random() - 0.5) * 30, 2);
+    else if (roll < 0.75) this.placePickupAt('heal', b.x, b.y, 30);
+    else if (roll < 0.9) {
+      this.placePickupAt('shard', b.x - 8, b.y, 30);
+      this.placePickupAt('shard', b.x + 8, b.y, 30);
+    }
   }
 
   private enemyAbility(i: number, def: EnemyDef, ux: number, uy: number) {
@@ -1802,6 +2131,10 @@ export class Game {
       }
       this.kills++;
       const def = this.roster[tp];
+      this.killsBy[def.name] = (this.killsBy[def.name] ?? 0) + 1;
+      this.ult = Math.min(1, this.ult + 1 / ULT_KILLS);
+      if (this.rift && !this.bossSpawned) this.riftProg += ((def.xp ?? 1) * (f.elite[i] ? 15 : 1)) / 700;
+      this.corpse(i);
       const x = f.x[i];
       const y = f.y[i];
       const big = f.sc[i] > 1.2;
@@ -1818,7 +2151,13 @@ export class Game {
         this.run.bosses++;
         for (let k = 0; k < 30; k++) this.dropGem(x + (Math.random() - 0.5) * 120, y + (Math.random() - 0.5) * 120, 5);
         this.hud.hideBoss();
-        if (this.opts.endless) {
+        this.slowT = 1.2;
+        this.zoomT = 1.5;
+        if (this.rift) {
+          this.riftWon = true;
+          this.hud.announce(`Великий портал ${this.rift} закрыт!`, '#ffc94a');
+          this.victoryT = 2.5;
+        } else if (this.opts.endless) {
           this.hud.announce(`Босс повержен (${this.run.bosses}). Следующий — через 4 минуты`, '#ffc94a');
           this.placePickupAt('chest', x, y, 999);
           this.bossSpawned = false;
@@ -1862,6 +2201,14 @@ export class Game {
       }
       this.burst(x, y, big ? 20 : 11, tp);
 
+      if (f.aff[i] & AF.molten) this.hazard(x, y, 70, 0.7, 0.4, f.dmg[i] * 1.5, 0xffb03a);
+      if (this.fusions.has('plague') && f.inf[i] > 0 && f.burn[i] > 0) {
+        this.forEachIn(x, y, 60, (j) => {
+          this.infect(j, 3, f.idps[i]);
+          this.burn(j, 3, f.bdps[i]);
+        });
+        this.impact(x, y, SCHOOLS.necro.color, PX * 3);
+      }
       if (def.beh === B.SPLIT && f.gen[i] === 0) {
         for (let k = 0; k < 2; k++) this.spawnEnemy(tp, x + (k ? 10 : -10), y, 0, 1);
       }
@@ -2206,11 +2553,25 @@ export class Game {
     }
   }
 
+  // труп вспыхивает белым и растворяется, проседая в пол
+  private corpse(i: number) {
+    const c = this.corpses;
+    const k = c.add();
+    if (k < 0) return;
+    const f = this.enemies.f;
+    c.f.x[k] = Math.round(f.x[i]);
+    c.f.y[k] = Math.round(f.y[i]);
+    c.f.life[k] = c.f.max[k] = 0.35;
+    c.f.sc[k] = f.sc[i];
+    c.f.flip[k] = f.x[i] > this.px ? -1 : 1;
+    c.sprites[k].texture = this.enemyTex[f.type[i]][2];
+  }
+
   private burst(x: number, y: number, r: number, kind: number) {
     const big = r > 15;
     const gp = this.gibs;
     const gf = gp.f;
-    const col = kind < this.roster.length ? tex.hexNum(this.roster[kind].pal[0]) : COL.blood;
+    const col = kind >= 0 && kind < this.roster.length ? tex.hexNum(this.roster[kind].pal[0]) : 0x9a6a3a;
     const gibCount = big ? 14 : 7;
     for (let k = 0; k < gibCount; k++) {
       const i = gp.add();
@@ -2331,6 +2692,7 @@ export class Game {
         this.freeProps.push(p.s);
       }
       this.chunks.delete(key);
+      this.worldDirty = true;
     }
 
     const totalW = L.props.reduce((s, p) => s + p.weight, 0);
@@ -2364,8 +2726,35 @@ export class Game {
           s.visible = true;
           s.alpha = def.kind === 'crack' || def.kind === 'rune' ? 0.85 : 1;
           const anim = def.anim ? [tex.propTex(def.kind, def.pal), tex.propTex(def.anim, def.pal)] : null;
-          list.push({ s, light: def.light ?? -1, x, y, anim });
+          list.push({ s, light: def.light ?? -1, x, y, anim, kind: def.kind, key: '', r: tex.FLAT_PROPS.has(def.kind) ? 0 : solidR(def.kind) });
         }
+        // разрушаемое и ловушки
+        const extra: [string, number][] = [];
+        if (hash(cx, cy, 500) < 0.4) extra.push([hash(cx, cy, 501) < 0.7 ? 'urn' : 'barrel', 0]);
+        if (hash(cx, cy, 600) < 0.22) extra.push(['trap', 1]);
+        extra.forEach(([kind, slot]) => {
+          const key = `${cx},${cy},${slot}`;
+          if (this.broken.has(key)) return;
+          const s = this.freeProps.pop();
+          if (!s) return;
+          const x = (cx + 0.15 + hash(cx, cy, 700 + slot) * 0.7) * CHUNK;
+          const y = (cy + 0.15 + hash(cx, cy, 800 + slot) * 0.7) * CHUNK;
+          const pal: Record<string, string> =
+            kind === 'trap'
+              ? { k: '#08050c', a: '#3a3440', A: '#5a5068', b: '#2a2438', B: '#3a3450', e: L.ground.glow, r: L.ground.glow, w: '#d8d0c0', m: '#5a5a6e' }
+              : { k: '#08050c', a: '#6a4a2a', A: '#9a6a3a', b: '#5a3a1a', B: '#8a5a2a', e: '#ff7a2d', r: '#ffd24a', w: '#ffe8c0', m: '#6a6a7a' };
+          s.texture = tex.propTex(kind, pal);
+          s.position.set(Math.round(x), Math.round(y));
+          s.visible = true;
+          s.alpha = 1;
+          if (kind === 'trap') this.propLayer.addChild(s);
+          else {
+            this.actors.addChild(s);
+            s.zIndex = Math.round(y) * 2;
+          }
+          list.push({ s, light: kind === 'trap' ? tex.hexNum(L.ground.glow) : -1, x, y, anim: null, kind, key, r: 0 });
+        });
+        this.worldDirty = true;
         this.chunks.set(key, list);
       }
     }
@@ -2389,7 +2778,7 @@ export class Game {
     const oldMax = this.stats.maxHp;
     this.gear[g.slot] = g;
     if (g.rarity === 3) this.run.legends++;
-    this.legs = new Set(this.gear.map((x) => x?.leg ?? '').filter(Boolean));
+    this.legs = new Set([...this.relicLegs, ...this.gear.map((x) => x?.leg ?? '')].filter(Boolean));
     this.stats = this.calcStats();
     if (this.stats.maxHp > oldMax) this.heal(this.stats.maxHp - oldMax);
     this.hp = Math.min(this.hp, this.stats.maxHp);
@@ -2439,11 +2828,38 @@ export class Game {
           evo.evolved = true;
           this.run.evolutions++;
           this.sfx.evolve();
+          this.hud.announce(`Компиляция: ${evo.def.evo.name}`, '#ffc94a');
+          this.slowT = 0.6;
+          this.zoomT = 1;
+          this.pillars.push({ x: this.px, y: this.py, color: COL.gold, life: 0.5, max: 0.5, w: 30 });
           this.impact(this.px, this.py, COL.gold, PX * 6);
           this.flash(this.px, this.py, 320, 1.5, COL.gold, 0.5);
           this.addShake(8);
         },
       });
+    }
+
+    for (const fu of FUSIONS) {
+      if (this.fusions.has(fu.id) || this.setCounts[fu.a] < 2 || this.setCounts[fu.b] < 2) continue;
+      opts.push({
+        card: {
+          kicker: 'Слияние школ',
+          title: fu.name,
+          lines: [fu.desc],
+          note: `${SCHOOLS[fu.a].name} + ${SCHOOLS[fu.b].name}`,
+          fusion: true,
+        },
+        act: () => {
+          this.fusions.add(fu.id);
+          this.hud.announce(`Слияние: ${fu.name}`, '#c46bff');
+          this.sfx.evolve();
+          this.slowT = 0.5;
+          this.zoomT = 0.8;
+          this.impact(this.px, this.py, COL.crystal, PX * 6);
+          this.flash(this.px, this.py, 320, 1.5, COL.crystal, 0.5);
+        },
+      });
+      break;
     }
 
     const pool: Option[] = [];
@@ -2549,7 +2965,7 @@ export class Game {
     const h = this.app.screen.height;
     // тексель = целое число физических пикселей, иначе чёткие пиксели дрожат при движении
     const res = this.app.renderer.resolution || 1;
-    const texDev = Math.max(2, Math.min(10, Math.round(((Math.min(w, h) / 560) * PX * res) / 2)));
+    const texDev = Math.max(2, Math.min(10, Math.round(((Math.min(w, h) / 560) * PX * res) / 2))) + (this.zoomT > 0 ? 1 : 0);
     const P = (texDev * 2) / res;
     this.zoom = P / PX;
     const z = this.zoom;
@@ -2795,6 +3211,17 @@ export class Game {
       s.position.set(im.f.x[i], im.f.y[i]);
     }
 
+    const cp = this.corpses;
+    for (let i = 0; i < cp.n; i++) {
+      const s = cp.sprites[i];
+      const k = cp.f.life[i] / cp.f.max[i];
+      const sc = PX * cp.f.sc[i];
+      s.position.set(cp.f.x[i], cp.f.y[i] + Math.round((1 - k) * 6 * cp.f.sc[i]));
+      s.scale.set(sc * cp.f.flip[i], sc * (0.3 + 0.7 * k));
+      s.alpha = k;
+      s.tint = k > 0.8 ? 0xffffff : 0xff8a6a;
+    }
+
     const gh = this.ghosts;
     for (let i = 0; i < gh.n; i++) {
       const s = gh.sprites[i];
@@ -2820,6 +3247,18 @@ export class Game {
 
     const hb = this.hpBar;
     hb.clear();
+    // полоски здоровья элиты
+    for (let i = 0; i < e.n; i++) {
+      if (!ef.elite[i] || ef.hp[i] <= 0) continue;
+      if (Math.abs(ef.x[i] - this.px) > halfW || Math.abs(ef.y[i] - this.py) > halfH) continue;
+      const bw = 34;
+      const bx = Math.round(ef.x[i] - bw / 2);
+      const by = Math.round(ef.y[i] - 16 * ef.sc[i] - 8);
+      const frac = Math.max(0, ef.hp[i] / ef.mhp[i]);
+      hb.rect(bx - 1, by - 1, bw + 2, 5).fill({ color: 0x05030c });
+      hb.rect(bx, by, Math.max(1, Math.round(bw * frac)), 3).fill({ color: ef.aff[i] & AF.shield && ef.at[i] % 6 < 2 ? COL.gold : 0xff8a1a });
+      if (ef.aff[i] & AF.shield && ef.at[i] % 6 < 2) groundG.circle(ef.x[i], ef.y[i] - 6, 18 * ef.sc[i]).stroke({ width: 2, color: COL.gold, alpha: 0.7 });
+    }
     if (!this.over) {
       const bw = 28;
       const bx = Math.round(this.px - bw / 2);
@@ -2855,6 +3294,7 @@ export class Game {
     }
 
     this.hud.setDash(Math.max(0, this.dashCd / CFG.dash.cooldown));
-    this.hud.update(this.level, this.time, this.kills, this.xp / this.need, this.bossSpawned ? -1 : this.nextBoss, this.run.shards);
+    this.hud.setUlt(this.ult);
+    this.hud.update(this.level, this.time, this.kills, this.xp / this.need, this.bossSpawned || this.rift ? -1 : this.nextBoss, this.run.shards);
   }
 }

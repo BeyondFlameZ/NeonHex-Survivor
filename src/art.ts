@@ -61,4 +61,7 @@ export const PROP: Record<string, string[]> = {
   pod: ["...kkkk...", "..kaAAak..", ".kaAeeAak.", "kaAerreAak", "kaAerreAak", "kaAAeeAAak", ".kaaAAaak.", "..kkaakk..", "....kk...."],
   candles: [".e...e..e.", ".r...r..r.", "kwk.kwkkwk", "kwk.kwkkwk", "kwk.kwkkwk", "kbbbbbbbbk", "kkkkkkkkkk"],
   rune: [".....eeeeee.....", "...ee......ee...", "..e..r....r..e..", ".e....r..r....e.", ".e.....rr.....e.", "e.....r..r.....e", "e....r....r....e", "e...rrrrrrrr...e", "e..............e", "e..............e", ".e............e.", ".e............e.", "..e..........e..", "...ee......ee...", ".....eeeeee.....", "................"],
+  urn: ["...kkk...", "..kAAAk..", "...kak...", "..kaAAak.", ".kaAwAAak", ".kaAAAAak", ".kaAAAAak", "..kaAAak.", "...kaak..", "....kk..."],
+  barrel: [".kkkkkkk.", "kbBBBBBbk", "kmmmmmmmk", "kbBrrrBbk", "kbBrerBbk", "kbBrrrBbk", "kmmmmmmmk", "kbBBBBBbk", ".kkkkkkk."],
+  trap: ["..kkkkkk..", ".kaaeeaak.", "kaeaaaaeak", "kaaarraaak", "keaarraaek", "kaaarraaak", "kaeaaaaeak", ".kaaeeaak.", "..kkkkkk.."],
 };

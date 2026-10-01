@@ -1,3 +1,5 @@
+import type { Relic } from './relics';
+
 export interface RunResult {
   level: number;
   won: boolean;
@@ -20,6 +22,11 @@ export interface RunResult {
   goblins: number;
   bosses: number;
   legends: number;
+  rift: number;
+  riftWon: boolean;
+  killsBy: Record<string, number>;
+  fusions: string[];
+  ults: number;
 }
 
 export interface Settings {
@@ -61,6 +68,15 @@ export interface Profile {
   endless: boolean;
   daily: { key: number; done: boolean; best: number; count: number };
   settings: Settings;
+  paragon: { xp: number; alloc: number[] };
+  relics: { inv: Relic[]; eq: (string | null)[] };
+  gems: Record<string, number>;
+  fusions: string[];
+  skin: string;
+  bestiary: Record<string, number>;
+  rift: { best: number; last: number };
+  records: { mode: string; text: string; score: number; date: number }[];
+  intro: boolean[];
 }
 
 const KEY = 'neonhex.save.v1';
@@ -85,6 +101,15 @@ export function freshProfile(): Profile {
     endless: false,
     daily: { key: 0, done: false, best: 0, count: 0 },
     settings: { bloom: true, shake: true, numbers: true, bright: 1, quality: 1, music: 0.6, sfx: 0.8 },
+    paragon: { xp: 0, alloc: [] },
+    relics: { inv: [], eq: [null, null] },
+    gems: {},
+    fusions: [],
+    skin: '',
+    bestiary: {},
+    rift: { best: 0, last: 1 },
+    records: [],
+    intro: five(() => false),
   };
 }
 
@@ -97,7 +122,16 @@ export function normalize(raw: Partial<Profile>): Profile {
     life: { ...base.life, ...raw.life },
     settings: { ...base.settings, ...raw.settings },
     daily: { ...base.daily, ...raw.daily },
+    paragon: { ...base.paragon, ...raw.paragon },
+    relics: { ...base.relics, ...raw.relics },
+    rift: { ...base.rift, ...raw.rift },
   } as Profile;
+  if (!Array.isArray(p.intro) || p.intro.length !== 5) p.intro = base.intro;
+  if (!Array.isArray(p.records)) p.records = [];
+  if (!Array.isArray(p.fusions)) p.fusions = [];
+  if (typeof p.gems !== 'object' || !p.gems) p.gems = {};
+  if (typeof p.bestiary !== 'object' || !p.bestiary) p.bestiary = {};
+  if (!Array.isArray(p.relics.eq) || p.relics.eq.length !== 2) p.relics.eq = [null, null];
   if (!Array.isArray(p.tierWon) || p.tierWon.length !== 5) p.tierWon = base.tierWon;
   if (!Array.isArray(p.best) || p.best.length !== 5) p.best = base.best;
   if (!Array.isArray(p.classWins)) p.classWins = [];

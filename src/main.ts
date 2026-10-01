@@ -35,7 +35,7 @@ async function boot() {
   const input = new Input(app.canvas);
   const hud = new Hud();
   let game: Game | null = null;
-  let current: RunOpts = { level: 0, tier: 0, endless: false, daily: null, cls: 'cyber' };
+  let current: RunOpts = { level: 0, tier: 0, endless: false, daily: null, cls: 'cyber', rift: 0 };
 
   const destroyGame = () => {
     if (!game) return;
@@ -48,7 +48,7 @@ async function boot() {
     destroyGame();
     hud.setRunVisible(false);
     sfx.startMusic(5);
-    menu.show(current.daily ? 'title' : 'map');
+    menu.show(current.rift ? 'rift' : current.daily ? 'title' : 'map');
   };
 
   const startRun = (o: RunOpts) => {
@@ -77,6 +77,7 @@ async function boot() {
   });
 
   hud.bindDash(() => input.queueDash());
+  hud.bindUlt(() => game?.useUlt());
   hud.bindPause({
     toggle: () => game?.togglePause(),
     restart: () => startRun(current),

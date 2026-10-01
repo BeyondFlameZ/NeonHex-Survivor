@@ -209,7 +209,7 @@ export interface MetaStats {
   elem?: number[];
 }
 
-export function computeStats(gear: (Gear | null)[], meta?: MetaStats): Stats {
+export function computeStats(gear: (Gear | null)[], meta?: MetaStats, extraLegs: string[] = []): Stats {
   const s = baseStats();
   if (meta) {
     s.dmg += meta.dmg;
@@ -223,7 +223,7 @@ export function computeStats(gear: (Gear | null)[], meta?: MetaStats): Stats {
     s.dur += meta.dur ?? 0;
     if (meta.elem) for (let k = 0; k < 6; k++) s.elem[k] += meta.elem[k] ?? 0;
   }
-  const legs = new Set(gear.map((g) => g?.leg).filter(Boolean));
+  const legs = new Set([...gear.map((g) => g?.leg ?? ''), ...extraLegs].filter(Boolean));
   for (const g of gear) {
     if (!g) continue;
     for (const st of g.stats) {
