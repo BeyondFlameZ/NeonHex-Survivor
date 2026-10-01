@@ -1,0 +1,74 @@
+name: Android
+
+# Запуск: вкладка Actions → Android → Run workflow (или тег v*)
+on:
+  workflow_dispatch:
+  push:
+    tags: ['v*']
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    env:
+      HAS_KEY: ${{ secrets.ANDROID_KEYSTORE_BASE64 != '' }}
+      HAS_PLAY: ${{ secrets.PLAY_SERVICE_ACCOUNT_JSON != '' }}
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+
+      - uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: 21
+
+      - run: npm ci
+      - run: npm run build
+
+      - name: Нативный проект
+        run: bash scripts/native-android.sh
+        env:
+          VERSION_CODE: ${{ github.run_number }}
+
+      - name: Сборка AAB и тестового APK
+        working-directory: android
+        run: ./gradlew --no-daemon bundleRelease assembleDebug
+
+      - name: Подпись AAB ключом загрузки
+        if: env.HAS_KEY == 'true'
+        env:
+          KS_B64: ${{ secrets.ANDROID_KEYSTORE_BASE64 }}
+          KS_PASS: ${{ secrets.ANDROID_KEYSTORE_PASSWORD }}
+        run: |
+          echo "$KS_B64" | base64 -d > "$RUNNER_TEMP/upload.jks"
+          AAB=android/app/build/outputs/bundle/release/app-release.aab
+          jarsigner -sigalg SHA256withRSA -digestalg SHA-256 \
+            -keystore "$RUNNER_TEMP/upload.jks" -storepass "$KS_PASS" -keypass "$KS_PASS" \
+            "$AAB" upload
+          jarsigner -verify "$AAB" | tail -1
+          rm "$RUNNER_TEMP/upload.jks"
+
+      - name: Файлы
+        run: |
+          mkdir -p out
+          cp android/app/build/outputs/bundle/release/app-release.aab "out/neonhex-${{ github.run_number }}.aab"
+          cp android/app/build/outputs/apk/debug/app-debug.apk "out/neonhex-test-${{ github.run_number }}.apk"
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: neonhex-android-${{ github.run_number }}
+          path: out/
+
+      # включится, когда добавишь сервисный аккаунт Google Play (после первой ручной загрузки)
+      - name: Загрузка во внутреннее тестирование Google Play
+        if: env.HAS_PLAY == 'true' && env.HAS_KEY == 'true'
+        uses: r0adkll/upload-google-play@v1
+        with:
+          serviceAccountJsonPlainText: ${{ secrets.PLAY_SERVICE_ACCOUNT_JSON }}
+          packageName: com.beyondflamez.neonhex
+          releaseFiles: out/neonhex-${{ github.run_number }}.aab
+          track: internal
+          status: draft

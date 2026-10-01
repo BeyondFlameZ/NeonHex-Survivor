@@ -1,3 +1,8 @@
+import '@fontsource/pixelify-sans/400.css';
+import '@fontsource/pixelify-sans/600.css';
+import '@fontsource/pixelify-sans/700.css';
+import '@fontsource/cormorant-sc/600.css';
+import '@fontsource/cormorant-sc/700.css';
 import './style.css';
 import { Application, type Ticker } from 'pixi.js';
 import { Sound } from './audio';
@@ -8,9 +13,11 @@ import { Input } from './input';
 import { Menu } from './menu';
 import { settle } from './meta';
 import type { RunOpts } from './modes';
-import { loadProfile, type Profile } from './save';
+import { initNative, restoreSave } from './native';
+import { loadProfile, SAVE_KEY, type Profile } from './save';
 
 async function boot() {
+  await restoreSave(SAVE_KEY);
   let profile: Profile = loadProfile();
   const app = new Application();
   const res = [1, 1.5, 2][profile.settings.quality] ?? 1.5;
@@ -27,6 +34,7 @@ async function boot() {
 
   const sfx = new Sound();
   sfx.setVolumes(profile.settings.music, profile.settings.sfx);
+  sfx.setHaptics(profile.settings.haptics);
   // iOS включает звук только по жесту — разблокируем на каждом касании (дёшево, если уже работает)
   const unlock = () => sfx.unlock();
   window.addEventListener('pointerdown', unlock, { passive: true });
@@ -72,7 +80,10 @@ async function boot() {
       profile = p;
       sfx.setVolumes(p.settings.music, p.settings.sfx);
     },
-    audio: () => sfx.setVolumes(profile.settings.music, profile.settings.sfx),
+    audio: () => {
+      sfx.setVolumes(profile.settings.music, profile.settings.sfx);
+      sfx.setHaptics(profile.settings.haptics);
+    },
     click: () => sfx.click(),
   });
 
@@ -90,6 +101,18 @@ async function boot() {
   hud.setRunVisible(false);
   sfx.startMusic(5);
   menu.show('title');
+
+  // свернули приложение или вкладку — пауза
+  document.addEventListener('visibilitychange', () => {
+    if (document.hidden) game?.pauseIfRunning();
+  });
+  await initNative({
+    back: () => {
+      if (game?.isOver()) toMap();
+      else if (game) game.togglePause();
+      else menu.back();
+    },
+  });
 
   // офлайн-режим и установка на домашний экран — только на опубликованной версии
   if ('serviceWorker' in navigator && location.hostname.endsWith('github.io')) {

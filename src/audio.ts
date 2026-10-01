@@ -1,3 +1,5 @@
+import { buzz, setHaptics } from './native';
+
 // Весь звук синтезируется на лету: ни одного аудиофайла.
 // Эффекты — короткие осцилляторы и шум с огибающими, музыка — генеративный эмбиент по ладу локации.
 
@@ -86,6 +88,10 @@ export class Sound {
       if (this.theme >= 0) this.startMusic(this.theme);
     }
     if (this.ctx.state !== 'running') void this.ctx.resume();
+  }
+
+  setHaptics(on: boolean) {
+    setHaptics(on);
   }
 
   setVolumes(music: number, sfx: number) {
@@ -190,6 +196,7 @@ export class Sound {
   }
 
   boom(big = false) {
+    if (big) buzz('light');
     if (!this.ready('boom', big ? 0.05 : 0.12)) return;
     this.hiss(big ? 0.7 : 0.4, big ? 0.35 : 0.22, 'lowpass', 1400, 80);
     this.tone('sine', big ? 110 : 90, 30, big ? 0.6 : 0.35, big ? 0.35 : 0.2);
@@ -217,6 +224,7 @@ export class Sound {
   }
 
   hurt() {
+    buzz('medium');
     if (!this.ready('hurt', 0.15)) return;
     this.tone('sawtooth', 240, 70, 0.22, 0.16);
     this.hiss(0.15, 0.1, 'lowpass', 2000, 300);
@@ -228,11 +236,13 @@ export class Sound {
   }
 
   levelup() {
+    buzz('light');
     if (!this.ready('levelup', 0.3)) return;
     [0, 4, 7, 12].forEach((s, k) => this.tone('triangle', semi(523, s), semi(523, s), 0.3, 0.09, k * 0.07, 0.01));
   }
 
   evolve() {
+    buzz('heavy');
     if (!this.ready('evolve', 0.5)) return;
     [0, 7, 12, 16, 19, 24].forEach((s, k) => this.tone('square', semi(392, s), semi(392, s), 0.4, 0.05, k * 0.06, 0.01));
     this.hiss(0.8, 0.08, 'highpass', 6000, 9000);
@@ -244,6 +254,7 @@ export class Sound {
   }
 
   legendary() {
+    buzz('heavy');
     if (!this.ready('legendary', 0.5)) return;
     [0, 4, 7, 11, 14].forEach((s, k) => this.tone('triangle', semi(330, s), semi(330, s), 1.2, 0.07, k * 0.09, 0.02));
     this.tone('sine', 82, 80, 1.2, 0.15);
@@ -266,6 +277,7 @@ export class Sound {
   }
 
   boss() {
+    buzz('heavy');
     if (!this.ready('boss', 1)) return;
     this.tone('sawtooth', 70, 40, 1.8, 0.25, 0, 0.2);
     this.tone('sawtooth', 71.5, 41, 1.8, 0.2, 0, 0.2);

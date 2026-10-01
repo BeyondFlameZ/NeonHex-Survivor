@@ -8,6 +8,7 @@ import { canAlloc, NODES, PCENTER, paragonLevel, PSIZE, statLabel } from './para
 import { gemById, gemKey, GEMS, parseGem } from './relics';
 import { SKINS } from './skins';
 import { legendById } from './stats';
+import { exitApp, isNative } from './native';
 import { exportCode, importCode, resetProfile, saveProfile, type Profile } from './save';
 import { SCHOOL_ORDER, SCHOOLS } from './schools';
 import { ARSENAL } from './weapons';
@@ -54,6 +55,15 @@ export class Menu {
 
   hide() {
     this.root.hidden = true;
+  }
+
+  // кнопка «Назад» на Android: из любого экрана — на титул, с титула — выход
+  back() {
+    const screen = this.root.dataset.screen;
+    if (screen === 'map' || screen === 'rift' || screen === 'daily') return this.render('title');
+    if (screen === 'level') return this.render('map');
+    if (screen && screen !== 'title') return this.render('title');
+    void exitApp();
   }
 
   private render(screen: Screen) {
@@ -714,12 +724,13 @@ export class Menu {
     cycle('Яркость', ['Тёмная', 'Обычная', 'Яркая'], () => p.settings.bright, (v) => (p.settings.bright = v));
     cycle('Качество', ['Низкое', 'Среднее', 'Высокое'], () => p.settings.quality, (v) => (p.settings.quality = v), () => location.reload());
 
-    const toggle = (label: string, key: 'bloom' | 'shake' | 'numbers') => {
+    const toggle = (label: string, key: 'bloom' | 'shake' | 'numbers' | 'haptics') => {
       const row = el('button', 'toggle' + (p.settings[key] ? ' on' : '')) as HTMLButtonElement;
       row.append(el('span', '', label), el('span', 'toggle-state', p.settings[key] ? 'Вкл' : 'Выкл'));
       row.addEventListener('click', () => {
         p.settings[key] = !p.settings[key];
         saveProfile(p);
+        this.h.audio();
         this.render('settings');
       });
       list.append(row);
@@ -727,6 +738,7 @@ export class Menu {
     toggle('Свечение (bloom)', 'bloom');
     toggle('Тряска экрана', 'shake');
     toggle('Цифры урона', 'numbers');
+    if (isNative) toggle('Вибрация', 'haptics');
     list.append(el('p', 'hint', 'Тормозит на телефоне — снизь качество или выключи свечение. Звука нет — проверь бесшумный режим на iPhone.'));
 
     const save = el('div', 'block');

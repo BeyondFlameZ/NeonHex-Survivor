@@ -1,2 +1,10 @@
 node_modules
 dist
+# нативные проекты собираются в облаке из веб-версии
+android
+ios
+# ключи подписи — никогда не коммитить
+*.jks
+*.keystore
+*.p8
+store/screens/out

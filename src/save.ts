@@ -1,3 +1,4 @@
+import { clearSave, mirrorSave } from './native';
 import type { Relic } from './relics';
 
 export interface RunResult {
@@ -37,6 +38,7 @@ export interface Settings {
   quality: number; // 0 низкое, 1 среднее, 2 высокое (разрешение рендера)
   music: number; // 0..1
   sfx: number; // 0..1
+  haptics: boolean;
 }
 
 export interface Profile {
@@ -79,7 +81,8 @@ export interface Profile {
   intro: boolean[];
 }
 
-const KEY = 'neonhex.save.v1';
+export const SAVE_KEY = 'neonhex.save.v1';
+const KEY = SAVE_KEY;
 const five = <T>(f: () => T) => [0, 1, 2, 3, 4].map(f);
 
 export function freshProfile(): Profile {
@@ -100,7 +103,7 @@ export function freshProfile(): Profile {
     tier: 0,
     endless: false,
     daily: { key: 0, done: false, best: 0, count: 0 },
-    settings: { bloom: true, shake: true, numbers: true, bright: 1, quality: 1, music: 0.6, sfx: 0.8 },
+    settings: { bloom: true, shake: true, numbers: true, bright: 1, quality: 1, music: 0.6, sfx: 0.8, haptics: true },
     paragon: { xp: 0, alloc: [] },
     relics: { inv: [], eq: [null, null] },
     gems: {},
@@ -152,7 +155,9 @@ export function loadProfile(): Profile {
 
 export function saveProfile(p: Profile) {
   try {
-    localStorage.setItem(KEY, JSON.stringify(p));
+    const json = JSON.stringify(p);
+    localStorage.setItem(KEY, json);
+    mirrorSave(KEY, json);
   } catch {
     // приватный режим Safari может запретить запись — игра продолжит работать без сохранений
   }
@@ -161,6 +166,7 @@ export function saveProfile(p: Profile) {
 export function resetProfile(): Profile {
   try {
     localStorage.removeItem(KEY);
+    clearSave(KEY);
   } catch {
     // ignore
   }

@@ -571,6 +571,15 @@ export class Game {
     }
   }
 
+  isOver() {
+    return this.over;
+  }
+
+  // сворачивание приложения или «Назад» на Android ставят игру на паузу
+  pauseIfRunning() {
+    if (!this.paused && !this.over) this.togglePause();
+  }
+
   quit() {
     this.hud.hidePause();
     this.userPaused = false;
