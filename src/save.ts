@@ -18,6 +18,7 @@ export interface Settings {
   bloom: boolean;
   shake: boolean;
   numbers: boolean;
+  bright: number; // 0 тёмная, 1 обычная, 2 яркая
 }
 
 export interface Profile {
@@ -48,7 +49,7 @@ export function freshProfile(): Profile {
     life: { kills: 0, runs: 0, bosses: 0, crits: 0, evolutions: 0, shrines: 0, chests: 0, time: 0 },
     used: [],
     start: 'bolt',
-    settings: { bloom: true, shake: true, numbers: true },
+    settings: { bloom: true, shake: true, numbers: true, bright: 1 },
   };
 }
 

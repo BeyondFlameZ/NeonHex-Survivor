@@ -180,7 +180,7 @@ export const mechFrames = () =>
 function enemyPal(p: EnemyDef['pal']): Pal {
   return {
     k: '#0c0610',
-    a: shade(p[0], 0.62),
+    a: shade(p[0], 0.7),
     A: p[0],
     b: shade(p[1], 0.6),
     B: p[1],
@@ -218,11 +218,12 @@ export const propTex = (kind: string, pal: Pal) =>
 
 // ---------- пол локаций ----------
 
-export const groundTile = (st: GroundStyle) =>
-  memo(`ground:${st.pattern}:${st.base}`, () => {
+export const groundTile = (src: GroundStyle, f = 1) =>
+  memo(`ground:${src.pattern}:${src.base}:${f}`, () => {
+    const st = { ...src, base: shade(src.base, f), dark: shade(src.dark, f), light: shade(src.light, f), line: shade(src.line, f) };
     const S = 48;
     const { c, g } = canvas(S, S);
-    const r = rng(st.base.length * 131 + st.pattern.length * 7);
+    const r = rng(src.base.charCodeAt(2) * 131 + st.pattern.length * 7);
     const px = (x: number, y: number, col: string) => {
       g.fillStyle = col;
       g.fillRect(((x % S) + S) % S, ((y % S) + S) % S, 1, 1);
@@ -252,13 +253,13 @@ export const groundTile = (st: GroundStyle) =>
         g.fillRect(24, 24, 1, 24);
         g.fillRect(30, 0, 1, 24);
         for (let i = 0; i < 4; i++) crack(10, st.dark);
-        for (let i = 0; i < 12; i++) px((r() * S) | 0, (r() * S) | 0, '#2a3a2a');
+        for (let i = 0; i < 12; i++) px((r() * S) | 0, (r() * S) | 0, shade('#3e5440', f));
         px(40, 36, st.glow);
         break;
       }
       case 'basalt': {
         for (let i = 0; i < 6; i++) crack(18, st.line);
-        for (let i = 0; i < 2; i++) crack(22, '#5a1a0a', st.glow);
+        for (let i = 0; i < 2; i++) crack(22, shade('#7a2a10', f), st.glow);
         break;
       }
       case 'ice': {
@@ -277,7 +278,7 @@ export const groundTile = (st: GroundStyle) =>
             px((cx + Math.cos(t) * rad) | 0, (cy + Math.sin(t) * rad) | 0, st.line);
           }
         }
-        for (let i = 0; i < 3; i++) crack(20, '#3a4a1a', st.glow);
+        for (let i = 0; i < 3; i++) crack(20, shade('#4e6224', f), st.glow);
         break;
       }
       case 'cathedral': {
@@ -294,8 +295,8 @@ export const groundTile = (st: GroundStyle) =>
         }
         for (let i = 0; i < 3; i++) crack(10, st.base);
         px(24, 24, st.glow);
-        px(23, 24, '#6a2a8a');
-        px(25, 24, '#6a2a8a');
+        px(23, 24, '#8a3aaa');
+        px(25, 24, '#8a3aaa');
         break;
       }
     }
@@ -452,10 +453,10 @@ export const vignetteTex = () =>
   memo('vignette', () => {
     const S = 256;
     const { c, g } = canvas(S, S);
-    const grad = g.createRadialGradient(S / 2, S / 2, S * 0.18, S / 2, S / 2, S * 0.72);
+    const grad = g.createRadialGradient(S / 2, S / 2, S * 0.3, S / 2, S / 2, S * 0.75);
     grad.addColorStop(0, 'rgba(4,2,8,0)');
-    grad.addColorStop(0.6, 'rgba(4,2,8,0.55)');
-    grad.addColorStop(1, 'rgba(4,2,8,0.95)');
+    grad.addColorStop(0.65, 'rgba(4,2,8,0.28)');
+    grad.addColorStop(1, 'rgba(4,2,8,0.75)');
     g.fillStyle = grad;
     g.fillRect(0, 0, S, S);
     return toTex(c, false);

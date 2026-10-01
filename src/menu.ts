@@ -245,7 +245,7 @@ export class Menu {
     this.header('Настройки', 'title');
     const p = this.profile;
     const list = el('div', 'settings');
-    const toggle = (label: string, key: keyof Profile['settings']) => {
+    const toggle = (label: string, key: 'bloom' | 'shake' | 'numbers') => {
       const row = el('button', 'toggle' + (p.settings[key] ? ' on' : '')) as HTMLButtonElement;
       row.append(el('span', '', label), el('span', 'toggle-state', p.settings[key] ? 'Вкл' : 'Выкл'));
       row.addEventListener('click', () => {
@@ -255,6 +255,15 @@ export class Menu {
       });
       list.append(row);
     };
+    const names = ['Тёмная', 'Обычная', 'Яркая'];
+    const br = el('button', 'toggle on') as HTMLButtonElement;
+    br.append(el('span', '', 'Яркость'), el('span', 'toggle-state', names[p.settings.bright ?? 1]));
+    br.addEventListener('click', () => {
+      p.settings.bright = ((p.settings.bright ?? 1) + 1) % 3;
+      saveProfile(p);
+      this.render('settings');
+    });
+    list.append(br);
     toggle('Свечение (bloom)', 'bloom');
     toggle('Тряска экрана', 'shake');
     toggle('Цифры урона', 'numbers');

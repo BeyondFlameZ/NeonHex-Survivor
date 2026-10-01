@@ -44,6 +44,12 @@ const IMPACT_FRAME = 0.04;
 const MAX_WEAPONS = 6;
 const CHUNK = 320;
 const BOSS = 9;
+// пресеты яркости из настроек: тёмная / обычная / яркая
+const LOOK = [
+  { ground: 0.8, vig: 1, glow: 0.24, fog: 0.14 },
+  { ground: 1, vig: 0.7, glow: 0.32, fog: 0.12 },
+  { ground: 1.3, vig: 0.4, glow: 0.4, fog: 0.1 },
+];
 const xpNeed = (lvl: number) => Math.round(5 * Math.pow(lvl, 1.35));
 const GIB_COLORS = [COL.blood, COL.bloodDark, 0x2e2340];
 
@@ -92,6 +98,9 @@ export class Game {
   private groundG = new Graphics();
   private fxG = new Graphics();
   private propLayer = new Container();
+  private poolLayer = new Container();
+  private pools: Sprite[] = [];
+  private look: (typeof LOOK)[number];
   private pickLayer = new Container();
 
   private bullets: Pool<BK>;
@@ -212,18 +221,20 @@ export class Game {
     this.hp = this.stats.maxHp;
     this.rerolls = this.meta.rerolls;
     this.revive = this.meta.revive;
+    this.look = LOOK[Math.max(0, Math.min(2, profile.settings.bright ?? 1))];
 
-    this.bg = new TilingSprite({ texture: tex.groundTile(this.L.ground), width: app.screen.width, height: app.screen.height });
+    this.bg = new TilingSprite({ texture: tex.groundTile(this.L.ground, this.look.ground), width: app.screen.width, height: app.screen.height });
     this.fog = new TilingSprite({ texture: tex.fogTex(), width: app.screen.width, height: app.screen.height });
     this.fog.tint = tex.hexNum(this.L.fog);
-    this.fog.alpha = 0.22;
+    this.fog.alpha = this.look.fog;
+    this.fog.blendMode = 'add';
 
     this.glow = new Sprite(tex.lightTex());
     this.glow.anchor.set(0.5);
     this.glow.blendMode = 'add';
     this.glow.tint = this.L.torch;
-    this.glow.alpha = 0.2;
-    this.glow.scale.set(2.4);
+    this.glow.alpha = this.look.glow;
+    this.glow.scale.set(3.2);
 
     this.mageTex = tex.mageFrames();
     this.mechTex = tex.mechFrames();
@@ -291,6 +302,15 @@ export class Game {
       this.pickLayer.addChild(s);
       this.freePick.push(s);
     }
+    const lt = tex.lightTex();
+    for (let i = 0; i < 40; i++) {
+      const s = new Sprite(lt);
+      s.anchor.set(0.5);
+      s.blendMode = 'add';
+      s.visible = false;
+      this.poolLayer.addChild(s);
+      this.pools.push(s);
+    }
     const ghostTex = tex.mageGhost();
     for (let i = 0; i < 6; i++) {
       const s = new Sprite(ghostTex);
@@ -308,6 +328,7 @@ export class Game {
 
     this.world.addChild(
       this.glow,
+      this.poolLayer,
       decalLayer,
       this.groundG,
       this.propLayer,
@@ -339,6 +360,7 @@ export class Game {
     }
 
     this.vignette = new Sprite(tex.vignetteTex());
+    this.vignette.alpha = this.look.vig;
     this.root.addChild(this.scene, this.vignette, this.hurtOverlay, this.screenG);
 
     this.addWeapon(byId(startId) ?? ARSENAL[0]);
@@ -2213,14 +2235,26 @@ export class Game {
     groundG.clear();
     const t = this.time;
 
-    if (!this.over) this.light(this.px, this.py - 6, 190, 0.85, this.L.torch);
+    if (!this.over) this.light(this.px, this.py - 6, 230, 0.9, this.L.torch);
+    let nPool = 0;
+    const pool = (x: number, y: number, scale: number, alpha: number, color: number) => {
+      if (nPool >= this.pools.length) return;
+      const s = this.pools[nPool++];
+      s.visible = true;
+      s.position.set(x, y);
+      s.scale.set(scale);
+      s.alpha = alpha;
+      s.tint = color;
+    };
     for (let i = 0; i < this.nF; i++) this.light(this.fx[i], this.fy[i], this.fr[i], this.fs[i] * (this.fl[i] / this.fm[i]), this.fc[i]);
 
     for (const list of this.chunks.values()) {
       for (const p of list) {
         if (p.anim) p.s.texture = p.anim[((t * 7 + p.x) | 0) & 1];
         if (p.light >= 0 && Math.abs(p.x - this.px) < this.viewHW + 100 && Math.abs(p.y - this.py) < this.viewHH + 100) {
-          this.light(p.x, p.y - 14, 150, 0.55 + Math.sin(t * 9 + p.x) * 0.08, p.light);
+          const flick = Math.sin(t * 9 + p.x) * 0.08;
+          this.light(p.x, p.y - 14, 150, 0.55 + flick, p.light);
+          pool(p.x, p.y - 8, 0.85, 0.26 + flick * 0.5, p.light);
         }
       }
     }
@@ -2230,8 +2264,11 @@ export class Game {
       p.s.position.set(Math.round(p.x), Math.round(p.y) + bob);
       const col = p.kind === 'heal' || p.kind === 'fountain' ? COL.blood : COL.gold;
       this.light(p.x, p.y - 10, 120, 0.9, col);
+      pool(p.x, p.y - 6, 0.55, 0.3, col);
       if (p.kind === 'shrine' || p.kind === 'fountain') groundG.circle(p.x, p.y, 24).stroke({ width: 2, color: col, alpha: 0.35 + Math.sin(t * 5) * 0.15 });
     }
+
+    for (let i = nPool; i < this.pools.length; i++) this.pools[i].visible = false;
 
     for (const zn of this.zones) {
       const k = Math.min(1, zn.life / 0.4);
@@ -2419,7 +2456,7 @@ export class Game {
     this.player.tint = this.rage > 0 ? 0xffb0b0 : 0xffffff;
 
     this.glow.position.set(this.px, this.py);
-    this.glow.alpha = 0.2 + Math.sin(t * 2.2) * 0.03;
+    this.glow.alpha = this.look.glow + Math.sin(t * 2.2) * 0.03;
 
     const hb = this.hpBar;
     hb.clear();
