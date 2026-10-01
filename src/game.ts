@@ -4,59 +4,46 @@ import { CFG, COL } from './config';
 import { SpatialGrid } from './grid';
 import type { Card, Hud } from './hud';
 import type { Input } from './input';
+import { B, ELITE_AT, LEVELS, UNLOCK_AT, WEIGHT, type EnemyDef, type LevelDef } from './levels';
+import { metaBonuses } from './meta';
 import { DamageNumbers } from './numbers';
 import { Pool } from './pool';
+import type { Profile, RunResult } from './save';
 import { SCHOOL_ORDER, SCHOOLS, type SchoolId } from './schools';
 import { computeStats, GEAR_GLYPH, GEAR_SLOTS, gearHasElem, rollGear, statText, type Gear, type Stats } from './stats';
 import * as tex from './textures';
-import { ARSENAL, START_WEAPON } from './weapons';
+import { ARSENAL, byId } from './weapons';
 import { F_NOFX, F_NOKB, F_NONUM, F_NOSET, type Weapon, type WeaponDef } from './weapons/types';
 
 type EK =
-  | 'x' | 'y' | 'hp' | 'spd' | 'r' | 'xp' | 'flash' | 'kx' | 'ky' | 'dcd' | 'kind' | 'ph' | 'burn' | 'bdps' | 'stun';
+  | 'x' | 'y' | 'hp' | 'mhp' | 'spd' | 'r' | 'xp' | 'flash' | 'kx' | 'ky' | 'dcd' | 'type' | 'ph'
+  | 'burn' | 'bdps' | 'stun' | 'chill' | 'frz' | 'inf' | 'idps' | 'stz' | 'sacc'
+  | 'ai' | 'st' | 'vx' | 'vy' | 'dmg' | 'kbr' | 'elite' | 'gen' | 'sc';
 type BK = 'x' | 'y' | 'vx' | 'vy' | 'life' | 'dmg' | 'pierce' | 'last' | 'elem' | 'aoe';
+type SK = 'x' | 'y' | 'vx' | 'vy' | 'life' | 'dmg';
 type GK = 'x' | 'y' | 'v' | 'val' | 'mag';
 type PK = 'x' | 'y' | 'vx' | 'vy' | 'life' | 'max';
 type DK = 'x' | 'y' | 'life';
 type IK = 'x' | 'y' | 't';
 type HK = 'x' | 'y' | 'life' | 'max';
+type MK = 'x' | 'y' | 'life' | 'dmg' | 'ai' | 'tg';
 
-interface Arc {
-  pts: number[];
-  color: number;
-  life: number;
-  max: number;
-  w: number;
-}
-interface Pillar {
-  x: number;
-  y: number;
-  color: number;
-  life: number;
-  max: number;
-  w: number;
-}
-interface Zone {
-  x: number;
-  y: number;
-  r: number;
-  life: number;
-  max: number;
-  dps: number;
-  elem: number;
-  color: number;
-  tick: number;
-}
-interface Option {
-  card: Card;
-  act: () => void;
-}
+interface Arc { pts: number[]; color: number; life: number; max: number; w: number }
+interface Pillar { x: number; y: number; color: number; life: number; max: number; w: number }
+interface Zone { x: number; y: number; r: number; life: number; max: number; dps: number; elem: number; color: number; tick: number }
+interface Hazard { x: number; y: number; r: number; delay: number; max: number; life: number; dmg: number; color: number; hit: boolean }
+interface Pickup { kind: 'heal' | 'chest' | 'shrine' | 'fountain'; x: number; y: number; life: number; s: Sprite }
+interface Decoy { x: number; y: number; life: number; max: number; dmg: number; r: number; s: Sprite }
+interface Option { card: Card; act: () => void }
+interface PropSpr { s: Sprite; light: number; x: number; y: number; anim: Texture[] | null }
 
 const TAU = Math.PI * 2;
 const OCT = Math.PI / 4;
 const PX = CFG.px;
 const IMPACT_FRAME = 0.04;
 const MAX_WEAPONS = 6;
+const CHUNK = 320;
+const BOSS = 9;
 const xpNeed = (lvl: number) => Math.round(5 * Math.pow(lvl, 1.35));
 const GIB_COLORS = [COL.blood, COL.bloodDark, 0x2e2340];
 
@@ -68,43 +55,63 @@ function shuffle<T>(a: T[]) {
   return a;
 }
 
+function hash(x: number, y: number, s: number) {
+  let h = Math.imul(x, 374761393) ^ Math.imul(y, 668265263) ^ Math.imul(s, 2246822519);
+  h = Math.imul(h ^ (h >>> 13), 1274126177);
+  return ((h ^ (h >>> 16)) >>> 0) / 4294967296;
+}
+
 export class Game {
   readonly root = new Container();
   readonly layerGround = new Container();
   readonly layerFx = new Container();
   readonly enemies: Pool<EK>;
 
-  // публичное состояние, которое читают оружия
   px = 0;
   py = 0;
   time = 0;
-  stats: Stats = computeStats([]);
+  aimX = 1;
+  aimY = 0;
+  stats: Stats;
   viewHW = 400;
   viewHH = 400;
+
+  private L: LevelDef;
+  private roster: EnemyDef[];
+  private eyeCol: number[];
+  private meta: ReturnType<typeof metaBonuses>;
 
   private scene = new Container();
   private world = new Container();
   private bg: TilingSprite;
+  private fog: TilingSprite;
   private glow: Sprite;
   private vignette: Sprite;
   private hurtOverlay = new Graphics();
+  private screenG = new Graphics();
   private groundG = new Graphics();
   private fxG = new Graphics();
+  private propLayer = new Container();
+  private pickLayer = new Container();
 
   private bullets: Pool<BK>;
+  private shots: Pool<SK>;
   private gems: Pool<GK>;
   private sparks: Pool<PK>;
   private gibs: Pool<PK>;
   private decals: Pool<DK>;
   private impacts: Pool<IK>;
   private ghosts: Pool<HK>;
+  private minions: Pool<MK>;
   private numbers: DamageNumbers;
   private grid = new SpatialGrid(CFG.gridCols, CFG.gridRows, CFG.cell, CFG.maxEnemies);
 
   private player: Sprite;
   private mageTex: Texture[];
+  private mechTex: Texture[];
+  private minionTex: Texture[];
   private enemyTex: Texture[][];
-  private rimTex: Texture[][];
+  private rimTex: Texture[][][];
   private rims: Sprite[] = [];
   private rimShown = 0;
   private splatTex: Texture[];
@@ -114,12 +121,19 @@ export class Game {
   private weapons: Weapon[] = [];
   private gear: (Gear | null)[] = [null, null, null, null, null, null];
   private setCounts: Record<SchoolId, number> = { electro: 0, pyro: 0, kinetic: 0, necro: 0, mech: 0, glitch: 0 };
-  private rerolls = 1;
+  private rerolls: number;
   private elecHits = 0;
 
   private arcs: Arc[] = [];
   private pillars: Pillar[] = [];
   private zones: Zone[] = [];
+  private hazards: Hazard[] = [];
+  private pickups: Pickup[] = [];
+  private freePick: Sprite[] = [];
+  private decoys: Decoy[] = [];
+  private freeDecoy: Sprite[] = [];
+  private chunks = new Map<string, PropSpr[]>();
+  private freeProps: Sprite[] = [];
 
   private lx = new Float32Array(CFG.maxLights);
   private ly = new Float32Array(CFG.maxLights);
@@ -138,7 +152,7 @@ export class Game {
 
   private face = 1;
   private moving = false;
-  private hp: number = CFG.player.hp;
+  private hp: number;
   private xp = 0;
   private level = 1;
   private need = xpNeed(1);
@@ -146,6 +160,14 @@ export class Game {
   private tick = 0;
   private spawnAcc = 0;
   private nextWave = 60;
+  private nextElite = 0;
+  private nextShrine = 45;
+  private nextFountain = 100;
+  private bossSpawned = false;
+  private bossI = -1;
+  private bossT = 3;
+  private bossPat = 0;
+  private victoryT = -1;
   private iframes = 0;
   private shakeAmt = 0;
   private hurt = 0;
@@ -155,41 +177,72 @@ export class Game {
   private dashCd = 0;
   private dashX = 0;
   private dashY = 0;
+  private mechT = 0;
+  private rage = 0;
+  private haste = 0;
+  private conduit = 0;
+  private conduitT = 0;
+  private revive: boolean;
+  private bloom: AdvancedBloomFilter | null = null;
   private zoom = 1;
   private paused = false;
+  private userPaused = false;
   private over = false;
   private pending = 0;
   private acc = 0;
   private tmpX = 0;
   private tmpY = 0;
 
+  private run = { crits: 0, evolutions: 0, dashes: 0, minHp: 1, shrines: 0, chests: 0, maxSet: 0 };
+
   constructor(
     private app: Application,
     private input: Input,
     private hud: Hud,
+    private levelIdx: number,
+    private profile: Profile,
+    startId: string,
+    private onEnd: (r: RunResult) => void,
   ) {
-    this.bg = new TilingSprite({ texture: tex.groundTile(), width: app.screen.width, height: app.screen.height });
+    this.L = LEVELS[levelIdx];
+    this.roster = [...this.L.enemies, this.L.boss];
+    this.eyeCol = this.roster.map((d) => tex.hexNum(d.pal[2]));
+    this.meta = metaBonuses(profile);
+    this.stats = computeStats(this.gear, this.meta);
+    this.hp = this.stats.maxHp;
+    this.rerolls = this.meta.rerolls;
+    this.revive = this.meta.revive;
+
+    this.bg = new TilingSprite({ texture: tex.groundTile(this.L.ground), width: app.screen.width, height: app.screen.height });
+    this.fog = new TilingSprite({ texture: tex.fogTex(), width: app.screen.width, height: app.screen.height });
+    this.fog.tint = tex.hexNum(this.L.fog);
+    this.fog.alpha = 0.22;
 
     this.glow = new Sprite(tex.lightTex());
     this.glow.anchor.set(0.5);
     this.glow.blendMode = 'add';
-    this.glow.tint = COL.arcane;
+    this.glow.tint = this.L.torch;
     this.glow.alpha = 0.2;
     this.glow.scale.set(2.4);
 
     this.mageTex = tex.mageFrames();
-    this.enemyTex = [tex.enemyFrames(0), tex.enemyFrames(1), tex.enemyFrames(2)];
-    this.rimTex = tex.enemyRimMasks();
+    this.mechTex = tex.mechFrames();
+    this.minionTex = tex.minionFrames();
+    this.enemyTex = this.roster.map((d) => tex.enemyFrames(d));
+    this.rimTex = this.roster.map((d) => tex.rimMasks(d.body));
     this.splatTex = tex.splatTextures();
     this.impactTex = tex.impactFrames();
     const pixel = tex.pixelTex();
 
     const decalLayer = new Container();
     const gemLayer = new Container();
+    const minionLayer = new Container();
     const enemyLayer = new Container();
     const rimLayer = new Container();
     const bulletLayer = new Container();
+    const shotLayer = new Container();
     const ghostLayer = new Container();
+    const decoyLayer = new Container();
     const gibLayer = new Container();
     const sparkLayer = new Container();
     const impactLayer = new Container();
@@ -199,33 +252,54 @@ export class Game {
     this.gems = new Pool<GK>(CFG.maxGems, ['x', 'y', 'v', 'val', 'mag'], tex.crystalTex(), gemLayer, 'normal', PX);
     this.enemies = new Pool<EK>(
       CFG.maxEnemies,
-      ['x', 'y', 'hp', 'spd', 'r', 'xp', 'flash', 'kx', 'ky', 'dcd', 'kind', 'ph', 'burn', 'bdps', 'stun'],
+      ['x', 'y', 'hp', 'mhp', 'spd', 'r', 'xp', 'flash', 'kx', 'ky', 'dcd', 'type', 'ph', 'burn', 'bdps', 'stun', 'chill', 'frz', 'inf', 'idps', 'stz', 'sacc', 'ai', 'st', 'vx', 'vy', 'dmg', 'kbr', 'elite', 'gen', 'sc'],
       this.enemyTex[0][0],
       enemyLayer,
       'normal',
       PX,
     );
-    this.bullets = new Pool<BK>(
-      CFG.maxBullets,
-      ['x', 'y', 'vx', 'vy', 'life', 'dmg', 'pierce', 'last', 'elem', 'aoe'],
-      tex.boltTex(),
-      bulletLayer,
-      'normal',
-      PX,
-    );
+    this.bullets = new Pool<BK>(CFG.maxBullets, ['x', 'y', 'vx', 'vy', 'life', 'dmg', 'pierce', 'last', 'elem', 'aoe'], tex.boltTex(), bulletLayer, 'normal', PX);
+    this.shots = new Pool<SK>(CFG.maxEnemyShots, ['x', 'y', 'vx', 'vy', 'life', 'dmg'], tex.orbTex(), shotLayer, 'normal', PX);
     this.ghosts = new Pool<HK>(CFG.maxGhosts, ['x', 'y', 'life', 'max'], tex.mageGhost(), ghostLayer, 'add', PX);
+    this.minions = new Pool<MK>(CFG.maxMinions, ['x', 'y', 'life', 'dmg', 'ai', 'tg'], this.minionTex[0], minionLayer, 'normal', PX);
     this.gibs = new Pool<PK>(CFG.maxGibs, ['x', 'y', 'vx', 'vy', 'life', 'max'], pixel, gibLayer, 'normal', PX);
     this.sparks = new Pool<PK>(CFG.maxSparks, ['x', 'y', 'vx', 'vy', 'life', 'max'], pixel, sparkLayer, 'add', PX);
     this.impacts = new Pool<IK>(CFG.maxImpacts, ['x', 'y', 't'], this.impactTex[0], impactLayer, 'add', PX);
     this.numbers = new DamageNumbers(CFG.maxNumbers, numberLayer, tex.digitTextures());
 
     for (let i = 0; i < CFG.maxEnemies; i++) {
-      const s = new Sprite(this.rimTex[0][0]);
+      const s = new Sprite(this.rimTex[0][0][0]);
       s.anchor.set(0.5);
       s.blendMode = 'add';
       s.visible = false;
       rimLayer.addChild(s);
       this.rims.push(s);
+    }
+    for (let i = 0; i < CFG.maxProps; i++) {
+      const s = new Sprite(pixel);
+      s.anchor.set(0.5, 0.9);
+      s.scale.set(PX);
+      s.visible = false;
+      this.propLayer.addChild(s);
+      this.freeProps.push(s);
+    }
+    for (let i = 0; i < 16; i++) {
+      const s = new Sprite(pixel);
+      s.anchor.set(0.5, 0.8);
+      s.scale.set(PX);
+      s.visible = false;
+      this.pickLayer.addChild(s);
+      this.freePick.push(s);
+    }
+    const ghostTex = tex.mageGhost();
+    for (let i = 0; i < 6; i++) {
+      const s = new Sprite(ghostTex);
+      s.anchor.set(0.5);
+      s.scale.set(PX);
+      s.visible = false;
+      s.blendMode = 'add';
+      decoyLayer.addChild(s);
+      this.freeDecoy.push(s);
     }
 
     this.player = new Sprite(this.mageTex[0]);
@@ -236,11 +310,16 @@ export class Game {
       this.glow,
       decalLayer,
       this.groundG,
+      this.propLayer,
       this.layerGround,
       gemLayer,
+      this.pickLayer,
+      minionLayer,
       enemyLayer,
       rimLayer,
+      decoyLayer,
       bulletLayer,
+      shotLayer,
       ghostLayer,
       this.player,
       this.layerFx,
@@ -251,19 +330,25 @@ export class Game {
       this.hpBar,
       numberLayer,
     );
-    this.scene.addChild(this.bg, this.world);
+    this.scene.addChild(this.bg, this.world, this.fog);
 
-    if (CFG.bloom) {
-      this.scene.filters = [
-        new AdvancedBloomFilter({ threshold: 0.42, bloomScale: 1.25, brightness: 1, blur: 5, quality: 5 }),
-      ];
+    if (profile.settings.bloom) {
+      this.bloom = new AdvancedBloomFilter({ threshold: 0.42, bloomScale: 1.25, brightness: 1, blur: 5, quality: 5 });
+      this.scene.filters = [this.bloom];
       this.scene.filterArea = app.screen;
     }
 
     this.vignette = new Sprite(tex.vignetteTex());
-    this.root.addChild(this.scene, this.vignette, this.hurtOverlay);
+    this.root.addChild(this.scene, this.vignette, this.hurtOverlay, this.screenG);
 
-    this.addWeapon(START_WEAPON);
+    this.addWeapon(byId(startId) ?? ARSENAL[0]);
+    this.hud.announce(`${this.L.name} · ${this.L.sub}`, '#ffc94a');
+  }
+
+  destroy() {
+    this.scene.filters = [];
+    this.bloom?.destroy();
+    this.root.destroy({ children: true });
   }
 
   frame(dt: number) {
@@ -275,23 +360,40 @@ export class Game {
     this.render();
   }
 
+  togglePause() {
+    if (this.over || (this.paused && !this.userPaused)) return;
+    this.userPaused = !this.userPaused;
+    this.paused = this.userPaused;
+    if (this.userPaused) this.hud.showPause();
+    else this.hud.hidePause();
+  }
+
+  quit() {
+    this.hud.hidePause();
+    this.userPaused = false;
+    this.paused = false;
+    this.end(false);
+  }
+
   // ================= API для оружия =================
 
   heal(n: number) {
     this.hp = Math.min(this.stats.maxHp, this.hp + n);
   }
   cdMul() {
-    return Math.max(0.35, 1 - this.stats.cd);
+    return Math.max(0.3, 1 - this.stats.cd - (this.haste > 0 ? 0.3 : 0));
   }
   dmgMul(elem: number) {
-    const set = elem === 0 && this.setCounts.electro >= 2 ? 0.15 : 0;
-    return 1 + this.stats.dmg + this.stats.elem[elem] + set;
+    let set = 0;
+    if (elem === 0 && this.setCounts.electro >= 2) set = 0.15;
+    if (elem === 4 && this.setCounts.mech >= 2) set = 0.25;
+    return (1 + this.stats.dmg + this.stats.elem[elem] + set) * (this.rage > 0 ? 1.6 : 1);
   }
   areaMul() {
     return 1 + this.stats.area;
   }
-  durMul() {
-    return 1 + this.stats.dur;
+  durMul(elem = -1) {
+    return (1 + this.stats.dur) * (elem === 5 && this.setCounts.glitch >= 2 ? 1.5 : 1);
   }
   speedMul() {
     return 1 + this.stats.speed;
@@ -299,12 +401,20 @@ export class Game {
   amount() {
     return this.stats.amount;
   }
+  setCount(id: SchoolId) {
+    return this.setCounts[id];
+  }
+  mechActive() {
+    return this.mechT > 0;
+  }
+  facing() {
+    return this.face;
+  }
 
-  // живые враги, чей круг касается круга (x, y, r)
   forEachIn(x: number, y: number, r: number, cb: (j: number) => void) {
     const g = this.grid;
     const f = this.enemies.f;
-    const reach = r + CFG.enemyMaxR;
+    const reach = r + CFG.enemyMaxR * 2;
     const x0 = Math.max(0, Math.floor((x - reach - g.ox) / g.cell));
     const x1 = Math.min(g.cols - 1, Math.floor((x + reach - g.ox) / g.cell));
     const y0 = Math.max(0, Math.floor((y - reach - g.oy) / g.cell));
@@ -395,7 +505,6 @@ export class Game {
     return pick;
   }
 
-  // из 16 случайных врагов на экране — тот, у кого больше всего соседей
   densest() {
     let best = -1;
     let bc = -1;
@@ -415,7 +524,7 @@ export class Game {
   segment(x0: number, y0: number, x1: number, y1: number, w: number, cb: (j: number) => void) {
     const g = this.grid;
     const f = this.enemies.f;
-    const reach = w + CFG.enemyMaxR;
+    const reach = w + CFG.enemyMaxR * 2;
     const cx0 = Math.max(0, Math.floor((Math.min(x0, x1) - reach - g.ox) / g.cell));
     const cx1 = Math.min(g.cols - 1, Math.floor((Math.max(x0, x1) + reach - g.ox) / g.cell));
     const cy0 = Math.max(0, Math.floor((Math.min(y0, y1) - reach - g.oy) / g.cell));
@@ -440,17 +549,19 @@ export class Game {
     }
   }
 
-  // возвращает true, если этот удар добил врага
   hit(j: number, dmg: number, nx: number, ny: number, elem: number, flags = 0): boolean {
     const f = this.enemies.f;
     if (f.hp[j] <= 0) return false;
     const crit = Math.random() < this.stats.crit;
-    const d = crit ? dmg * 2.2 : dmg;
+    let d = crit ? dmg * 2.2 : dmg;
+    if (f.frz[j] > 0 && this.setCounts.kinetic >= 2) d *= 1.5;
+    if (crit) this.run.crits++;
     f.hp[j] -= d;
     f.flash[j] = 0.08;
+    if (f.stz[j] > 0) f.sacc[j] += d;
 
-    if (!(flags & F_NOKB)) {
-      const kb = 160 * (11 / f.r[j]) * (crit ? 1.8 : 1);
+    if (!(flags & F_NOKB) && f.frz[j] <= 0) {
+      const kb = 160 * (11 / f.r[j]) * (crit ? 1.8 : 1) * f.kbr[j];
       f.kx[j] += nx * kb;
       f.ky[j] += ny * kb;
     }
@@ -471,7 +582,7 @@ export class Game {
         this.stop(0.035);
       }
     }
-    if (!(flags & F_NONUM) || crit) this.numbers.add(f.x[j], f.y[j] - f.r[j] - 8, d, crit);
+    if ((!(flags & F_NONUM) || crit) && this.profile.settings.numbers) this.numbers.add(f.x[j], f.y[j] - f.r[j] - 8, d, crit);
 
     if (elem === 0 && !(flags & F_NOSET) && this.setCounts.electro >= 4 && ++this.elecHits % 10 === 0) {
       this.orbital(f.x[j], f.y[j], 36 * this.areaMul(), 20 * this.dmgMul(0), COL.arcane, 0, F_NOSET);
@@ -479,7 +590,6 @@ export class Game {
     return f.hp[j] <= 0;
   }
 
-  // урон по площади; возвращает число убийств
   aoe(x: number, y: number, r: number, dmg: number, elem: number, flags = 0, onHit?: (j: number) => void) {
     const f = this.enemies.f;
     let kills = 0;
@@ -501,7 +611,32 @@ export class Game {
 
   stun(j: number, sec: number) {
     const f = this.enemies.f;
+    if (f.type[j] === BOSS) sec *= 0.2;
     f.stun[j] = Math.max(f.stun[j], sec * (this.setCounts.electro >= 2 ? 2 : 1));
+  }
+
+  // 5 стаков холода = заморозка
+  freeze(j: number, stacks: number) {
+    const f = this.enemies.f;
+    if (f.type[j] === BOSS) return;
+    f.chill[j] += stacks;
+    if (f.chill[j] >= 5) {
+      f.chill[j] = 0;
+      f.frz[j] = 1.5 * this.durMul();
+      this.impact(f.x[j], f.y[j] - 6, SCHOOLS.kinetic.color, PX * 2);
+    }
+  }
+
+  infect(j: number, sec: number, dps: number) {
+    const f = this.enemies.f;
+    f.inf[j] = Math.max(f.inf[j], sec);
+    f.idps[j] = Math.max(f.idps[j], dps);
+  }
+
+  stasis(j: number, sec: number) {
+    const f = this.enemies.f;
+    if (f.type[j] === BOSS) return;
+    f.stz[j] = Math.max(f.stz[j], sec);
   }
 
   shoot(x: number, y: number, vx: number, vy: number, dmg: number, pierce: number, elem: number, aoe: number, life: number) {
@@ -519,6 +654,55 @@ export class Game {
     f.elem[i] = elem;
     f.aoe[i] = aoe;
     f.life[i] = life;
+    b.sprites[i].tint = elem === 0 ? 0xffffff : SCHOOLS[SCHOOL_ORDER[elem]].color;
+  }
+
+  // затягивает кристаллы опыта в радиусе к магу
+  pullGems(x: number, y: number, r: number) {
+    const f = this.gems.f;
+    const r2 = r * r;
+    for (let i = 0; i < this.gems.n; i++) {
+      const dx = f.x[i] - x;
+      const dy = f.y[i] - y;
+      if (dx * dx + dy * dy < r2) f.mag[i] = 1;
+    }
+  }
+
+  minionCount() {
+    return this.minions.n;
+  }
+
+  minionCap(base: number) {
+    return Math.min(CFG.maxMinions, base + (this.setCounts.necro >= 4 ? 2 : 0));
+  }
+
+  spawnMinion(x: number, y: number, dmg: number, life: number) {
+    const m = this.minions;
+    const i = m.add();
+    if (i < 0) return false;
+    m.f.x[i] = x;
+    m.f.y[i] = y;
+    m.f.life[i] = life;
+    m.f.dmg[i] = dmg;
+    m.f.ai[i] = 0;
+    m.f.tg[i] = -1;
+    this.impact(x, y - 6, SCHOOLS.necro.color, PX * 2);
+    return true;
+  }
+
+  spawnDecoy(x: number, y: number, life: number, dmg: number, r: number) {
+    const s = this.freeDecoy.pop();
+    if (!s) return;
+    s.visible = true;
+    this.decoys.push({ x, y, life, max: life, dmg, r, s });
+    this.impact(x, y, SCHOOLS.glitch.color, PX * 3);
+  }
+
+  setMech(sec: number) {
+    this.mechT = Math.max(this.mechT, sec);
+    this.impact(this.px, this.py, COL.gold, PX * 5);
+    this.flash(this.px, this.py, 240, 1.3, COL.gold, 0.3);
+    this.addShake(6);
   }
 
   orbital(x: number, y: number, r: number, dmg: number, color: number, zoneDps: number, flags = 0) {
@@ -543,7 +727,6 @@ export class Game {
     this.arcs.push({ pts, color, life, max: life, w });
   }
 
-  // ломаная молнии между двумя точками
   lightning(x0: number, y0: number, x1: number, y1: number) {
     const dx = x1 - x0;
     const dy = y1 - y0;
@@ -572,7 +755,7 @@ export class Game {
   }
 
   number(x: number, y: number, v: number, crit: boolean) {
-    this.numbers.add(x, y, v, crit);
+    if (this.profile.settings.numbers) this.numbers.add(x, y, v, crit);
   }
 
   spark(x: number, y: number, vx: number, vy: number, life: number, tint: number) {
@@ -613,14 +796,26 @@ export class Game {
   }
 
   addShake(v: number) {
-    this.shakeAmt = Math.max(this.shakeAmt, v);
+    if (this.profile.settings.shake) this.shakeAmt = Math.max(this.shakeAmt, v);
   }
 
-  // мелкие стопы не чаще раза в 0.3с, иначе при сотне убийств в секунду игра встанет колом
   stop(sec: number) {
     if (sec < 0.06 && this.time - this.lastStop < 0.3) return;
     this.hitstop = Math.max(this.hitstop, sec);
     this.lastStop = this.time;
+  }
+
+  // ================= игрок =================
+
+  private hurtPlayer(dmg: number) {
+    if (this.iframes > 0 || this.dashT > 0 || this.mechT > 0 || this.over || this.victoryT >= 0) return;
+    this.hp -= dmg;
+    this.iframes = CFG.player.iframes;
+    this.addShake(6);
+    this.hurt = 1;
+    this.flash(this.px, this.py, 150, 1, COL.blood, 0.2);
+    this.stop(0.07);
+    this.run.minHp = Math.min(this.run.minHp, Math.max(0, this.hp) / this.stats.maxHp);
   }
 
   // ================= цикл =================
@@ -640,8 +835,13 @@ export class Game {
     const s = this.stats;
     const mx = this.input.mx;
     const my = this.input.my;
-    const speed = CFG.player.speed * (1 + s.move);
+    const speed = CFG.player.speed * (1 + s.move + (this.haste > 0 ? 0.3 : 0)) * (this.mechT > 0 ? 1.35 : 1);
 
+    if (mx !== 0 || my !== 0) {
+      const l = Math.hypot(mx, my);
+      this.aimX = mx / l;
+      this.aimY = my / l;
+    }
     if (this.dashCd > 0) this.dashCd -= dt;
     if (this.input.consumeDash() && this.dashCd <= 0 && this.dashT <= 0) this.startDash(mx, my);
 
@@ -662,22 +862,40 @@ export class Game {
     }
 
     if (this.iframes > 0) this.iframes -= dt;
+    if (this.mechT > 0) this.mechT -= dt;
+    if (this.rage > 0) this.rage -= dt;
+    if (this.haste > 0) this.haste -= dt;
     if (this.shakeAmt > 0) this.shakeAmt = Math.max(0, this.shakeAmt - dt * 40);
     if (this.hurt > 0) this.hurt = Math.max(0, this.hurt - dt * 2.5);
     this.heal(s.regen * dt);
+
+    if (this.conduit > 0) {
+      this.conduit -= dt;
+      this.conduitT -= dt;
+      if (this.conduitT <= 0) {
+        this.conduitT = 0.45;
+        const j = this.randomNear(this.px, this.py, 260);
+        if (j >= 0) this.orbital(this.enemies.f.x[j], this.enemies.f.y[j], 40, 30 * this.dmgMul(0), COL.arcane, 0, F_NOSET);
+      }
+    }
 
     const e = this.enemies;
     const g = this.grid;
     g.reset(this.px, this.py);
     for (let i = 0; i < e.n; i++) g.insert(i, e.f.x[i], e.f.y[i]);
 
-    this.spawn(dt);
+    this.director(dt);
     this.updateEnemies(dt);
     for (const w of this.weapons) w.update(dt);
+    this.updateMinions(dt);
+    this.updateDecoys(dt);
     this.updateBullets(dt);
+    this.updateShots(dt);
     this.updateZones(dt);
+    this.updateHazards(dt);
     this.reapEnemies();
     this.updateGems(dt);
+    this.updatePickups(dt);
     this.updateFx(this.sparks, dt, 0.9);
     this.updateFx(this.gibs, dt, 0.86);
     this.updateTimed(this.decals, dt);
@@ -694,15 +912,50 @@ export class Game {
       this.pending++;
     }
 
-    if (this.hp <= 0) {
-      this.over = true;
-      this.hp = 0;
-      this.burst(this.px, this.py, 22, 3);
-      this.flash(this.px, this.py, 220, 1.2, COL.blood, 0.6);
-      this.hud.showGameOver(this.time, this.level, this.kills);
+    if (this.victoryT >= 0) {
+      this.victoryT -= dt;
+      if (this.victoryT < 0) this.end(true);
       return;
     }
-    if (this.pending > 0) this.openLevelUp();
+
+    if (this.hp <= 0) {
+      if (this.revive) {
+        this.revive = false;
+        this.hp = this.stats.maxHp * 0.5;
+        this.iframes = 2;
+        this.aoe(this.px, this.py, 220, 200 * this.dmgMul(0), 0, F_NOSET);
+        this.impact(this.px, this.py, COL.arcane, PX * 6);
+        this.flash(this.px, this.py, 400, 1.6, COL.arcane, 0.6);
+        this.hud.announce('Резервная копия восстановлена', '#3ef0ff');
+      } else {
+        this.burst(this.px, this.py, 22, 3);
+        this.flash(this.px, this.py, 220, 1.2, COL.blood, 0.6);
+        this.end(false);
+        return;
+      }
+    }
+    if (this.pending > 0 && !this.paused) this.openLevelUp();
+  }
+
+  private end(won: boolean) {
+    if (this.over) return;
+    this.over = true;
+    this.hud.hideBoss();
+    this.onEnd({
+      level: this.levelIdx,
+      won,
+      time: this.time,
+      kills: this.kills,
+      lvl: this.level,
+      crits: this.run.crits,
+      evolutions: this.run.evolutions,
+      maxSet: this.run.maxSet,
+      dashes: this.run.dashes,
+      minHp: this.run.minHp,
+      shrines: this.run.shrines,
+      chests: this.run.chests,
+      weapons: this.weapons.map((w) => w.def.id),
+    });
   }
 
   // ---------- рывок ----------
@@ -724,6 +977,7 @@ export class Game {
     this.dashCd = CFG.dash.cooldown;
     this.iframes = Math.max(this.iframes, CFG.dash.iframes);
     this.face = dx >= 0 ? 1 : -1;
+    this.run.dashes++;
     this.impact(this.px, this.py, COL.arcane, PX * 2);
     this.flash(this.px, this.py, 140, 0.9, COL.arcane, 0.15);
     for (let k = 0; k < 8; k++) {
@@ -731,6 +985,8 @@ export class Game {
       const v = 80 + Math.random() * 140;
       this.spark(this.px, this.py + 8, Math.cos(a) * v, Math.sin(a) * v, 0.25, COL.arcane);
     }
+    if (this.setCounts.glitch >= 4) this.spawnDecoy(this.px, this.py, 2.5, 60 * this.dmgMul(5), 70);
+    for (const w of this.weapons) w.onDash?.();
   }
 
   private ghost() {
@@ -745,7 +1001,7 @@ export class Game {
     s.scale.set(PX * this.face, PX);
   }
 
-  // ---------- спавн ----------
+  // ---------- режиссёр уровня: спавн, волны, элита, босс, святилища ----------
 
   private ringRadius() {
     return Math.hypot(this.viewHW, this.viewHH) + 40;
@@ -758,115 +1014,305 @@ export class Game {
     this.tmpY = this.py + Math.sin(a) * rad;
   }
 
-  private spawn(dt: number) {
+  private pickType() {
+    let total = 0;
+    for (let k = 0; k < 9; k++) if (this.time >= UNLOCK_AT[k]) total += WEIGHT[k];
+    let r = Math.random() * total;
+    for (let k = 0; k < 9; k++) {
+      if (this.time < UNLOCK_AT[k]) continue;
+      r -= WEIGHT[k];
+      if (r <= 0) return k;
+    }
+    return 0;
+  }
+
+  private director(dt: number) {
     const t = this.time;
-    const rate = Math.min(CFG.spawn.maxRate, CFG.spawn.base + (t / 60) * CFG.spawn.perMin);
-    this.spawnAcc += rate * dt;
-    while (this.spawnAcc >= 1) {
-      this.spawnAcc -= 1;
-      this.ringPoint();
-      this.spawnEnemy(this.tmpX, this.tmpY);
+    const L = this.L;
+    if (this.victoryT < 0) {
+      let rate = Math.min(45 * L.rate, (1.2 + (t / 60) * 5.5) * L.rate);
+      if (this.bossSpawned) rate *= 0.35;
+      this.spawnAcc += rate * dt;
+      while (this.spawnAcc >= 1) {
+        this.spawnAcc -= 1;
+        this.ringPoint();
+        this.spawnEnemy(this.pickType(), this.tmpX, this.tmpY, 0, 0);
+      }
     }
 
-    if (t >= this.nextWave) {
+    if (t >= this.nextWave && !this.bossSpawned) {
       this.nextWave += 60;
+      this.hud.announce('Приближается орда', '#ff5a5a');
       const count = 24 + Math.floor(t / 60) * 8;
       const rad = this.ringRadius();
+      const type = this.pickType();
       for (let k = 0; k < count; k++) {
         const a = (k / count) * TAU;
-        this.spawnEnemy(this.px + Math.cos(a) * rad, this.py + Math.sin(a) * rad);
+        this.spawnEnemy(type, this.px + Math.cos(a) * rad, this.py + Math.sin(a) * rad, 0, 0);
       }
+    }
+
+    if (this.nextElite < ELITE_AT.length && t >= ELITE_AT[this.nextElite]) {
+      this.nextElite++;
+      const type = this.pickType();
+      this.ringPoint();
+      this.spawnEnemy(type, this.tmpX, this.tmpY, 1, 0);
+      this.hud.announce(`Элита: ${this.roster[type].name}`, '#ffc94a');
+    }
+
+    if (!this.bossSpawned && t >= L.bossAt) {
+      this.bossSpawned = true;
+      const a = Math.random() * TAU;
+      this.spawnEnemy(BOSS, this.px + Math.cos(a) * 320, this.py + Math.sin(a) * 320, 0, 0);
+      this.hud.announce(`Босс: ${L.boss.title}`, '#ff2d55');
+      this.hud.showBoss(L.boss.title);
+      this.addShake(8);
+    }
+
+    if (t >= this.nextShrine) {
+      this.nextShrine += 70;
+      this.placePickup('shrine', 45);
+    }
+    if (t >= this.nextFountain) {
+      this.nextFountain += 110;
+      this.placePickup('fountain', 45);
     }
   }
 
-  private spawnEnemy(x: number, y: number) {
+  private spawnEnemy(type: number, x: number, y: number, elite: number, gen: number) {
     const e = this.enemies;
     const i = e.add();
-    if (i < 0) return;
+    if (i < 0) return -1;
+    const d = this.roster[type];
     const t = this.time;
-    const roll = Math.random();
-    let kind = 0;
-    let r = 11;
-    let hp = 10 + t * 0.15;
-    let spd = 50 + Math.random() * 20;
-    let xp = 1;
-
-    if (t > 180 && roll < 0.05) {
-      kind = 2;
-      r = 22;
-      hp *= 6;
-      spd = 38;
-      xp = 5;
-    } else if (t > 90 && roll < 0.15) {
-      kind = 1;
-      r = 10;
-      hp *= 0.6;
-      spd = 115;
-    }
-
+    const boss = type === BOSS;
+    const sizeMul = (elite ? 1.4 : 1) * (gen ? 0.65 : 1);
+    const hpScale = boss ? 1 : this.L.hpMul * (1 + t / 240);
     const f = e.f;
     f.x[i] = x;
     f.y[i] = y;
-    f.hp[i] = hp;
-    f.spd[i] = spd;
-    f.r[i] = r;
-    f.xp[i] = xp;
-    f.flash[i] = 0;
-    f.kx[i] = 0;
-    f.ky[i] = 0;
-    f.dcd[i] = 0;
-    f.kind[i] = kind;
+    f.hp[i] = f.mhp[i] = d.hp * hpScale * (elite ? 10 : 1) * (gen ? 0.35 : 1);
+    f.spd[i] = d.spd * (0.9 + Math.random() * 0.2);
+    f.r[i] = d.r * sizeMul;
+    f.sc[i] = (d.size ?? 1) * sizeMul;
+    f.xp[i] = (d.xp ?? 1) * (elite ? 15 : 1);
+    f.dmg[i] = d.dmg * this.L.dmgMul;
+    f.kbr[i] = (d.kbr ?? 1) * (elite ? 0.4 : 1);
+    f.type[i] = type;
+    f.elite[i] = elite;
+    f.gen[i] = gen;
     f.ph[i] = Math.random() * 2;
-    f.burn[i] = 0;
-    f.bdps[i] = 0;
-    f.stun[i] = 0;
+    f.ai[i] = (d.cd ?? 2) * (0.5 + Math.random() * 0.5);
+    for (const k of ['flash', 'kx', 'ky', 'dcd', 'burn', 'bdps', 'stun', 'chill', 'frz', 'inf', 'idps', 'stz', 'sacc', 'st', 'vx', 'vy'] as const) {
+      f[k][i] = 0;
+    }
+    return i;
+  }
+
+  private enemyShoot(x: number, y: number, vx: number, vy: number, dmg: number, tint: number) {
+    const s = this.shots;
+    const i = s.add();
+    if (i < 0) return;
+    s.f.x[i] = x;
+    s.f.y[i] = y;
+    s.f.vx[i] = vx;
+    s.f.vy[i] = vy;
+    s.f.dmg[i] = dmg;
+    s.f.life[i] = 4;
+    s.sprites[i].tint = tint;
+  }
+
+  private hazard(x: number, y: number, r: number, delay: number, life: number, dmg: number, color: number) {
+    if (this.hazards.length >= 80) return;
+    this.hazards.push({ x, y, r, delay, max: delay, life, dmg, color, hit: false });
   }
 
   // ---------- враги ----------
 
   private updateEnemies(dt: number) {
     const n = this.enemies.n;
-    const { x, y, hp, spd, r, flash, kx, ky, dcd, burn, bdps, stun } = this.enemies.f;
+    const f = this.enemies.f;
+    const { x, y, hp, spd, r, flash, kx, ky, dcd, burn, bdps, stun, chill, frz, inf, idps, stz, sacc, ai, st, type } = f;
     const g = this.grid;
     const { head, next, cols, rows, cell } = g;
     const pr = CFG.player.radius;
     const parity = this.tick & 1;
+    const timeDmg = 1 + this.time / 300;
+    const decoy = this.decoys.length ? this.decoys[0] : null;
+    this.bossI = -1;
 
     for (let i = 0; i < n; i++) {
       if (hp[i] <= 0) continue;
+      const tp = type[i];
+      const def = this.roster[tp];
+      if (tp === BOSS) this.bossI = i;
 
       if (burn[i] > 0) {
         burn[i] -= dt;
         hp[i] -= bdps[i] * dt;
         if (burn[i] <= 0) bdps[i] = 0;
         if (((this.tick + i) & 15) === 0) this.spark(x[i], y[i] - 6, (Math.random() - 0.5) * 30, -50, 0.35, 0xff7a2d);
-        if (hp[i] <= 0) continue;
       }
+      if (inf[i] > 0) {
+        inf[i] -= dt;
+        hp[i] -= idps[i] * dt;
+        if (((this.tick + i) & 15) === 3) this.spark(x[i], y[i] - 8, (Math.random() - 0.5) * 30, -30, 0.4, SCHOOLS.necro.color);
+      }
+      if (hp[i] <= 0) continue;
       if (flash[i] > 0) flash[i] -= dt;
       if (dcd[i] > 0) dcd[i] -= dt;
+      if (chill[i] > 0) chill[i] = Math.max(0, chill[i] - dt * 0.8);
 
-      const dx = this.px - x[i];
-      const dy = this.py - y[i];
-      const d = Math.hypot(dx, dy) || 1;
-
-      if (d > CFG.far) {
-        this.ringPoint();
-        x[i] = this.tmpX;
-        y[i] = this.tmpY;
+      if (stz[i] > 0) {
+        stz[i] -= dt;
+        if (stz[i] <= 0) {
+          const burst = sacc[i] * 0.6;
+          sacc[i] = 0;
+          if (burst > 0) {
+            hp[i] -= burst;
+            this.impact(x[i], y[i] - 6, SCHOOLS.glitch.color, PX * 2);
+            this.number(x[i], y[i] - 20, burst, true);
+          }
+        }
         continue;
       }
 
-      if (stun[i] > 0) {
-        stun[i] -= dt;
+      const pdx = this.px - x[i];
+      const pdy = this.py - y[i];
+      const pd = Math.hypot(pdx, pdy) || 1;
+      if (pd > CFG.far && tp !== BOSS) {
+        this.ringPoint();
+        x[i] = this.tmpX;
+        y[i] = this.tmpY;
+        st[i] = 0;
+        continue;
+      }
+
+      let tx = this.px;
+      let ty = this.py;
+      if (decoy && Math.hypot(decoy.x - x[i], decoy.y - y[i]) < 420) {
+        tx = decoy.x;
+        ty = decoy.y;
+      }
+      const dx = tx - x[i];
+      const dy = ty - y[i];
+      const d = Math.hypot(dx, dy) || 1;
+      const ux = dx / d;
+      const uy = dy / d;
+
+      if (stun[i] > 0 || frz[i] > 0) {
+        if (stun[i] > 0) stun[i] -= dt;
+        if (frz[i] > 0) frz[i] -= dt;
         kx[i] *= 0.85;
         ky[i] *= 0.85;
         x[i] += kx[i] * dt;
         y[i] += ky[i] * dt;
-        if (((this.tick + i) & 15) === 0) this.spark(x[i], y[i] - 14, (Math.random() - 0.5) * 60, -30, 0.2, COL.arcane);
+        if (stun[i] > 0 && ((this.tick + i) & 15) === 0) this.spark(x[i], y[i] - 14, (Math.random() - 0.5) * 60, -30, 0.2, COL.arcane);
         continue;
       }
 
-      if ((i & 1) === parity) {
+      const slow = 1 - Math.min(0.6, chill[i] * 0.12);
+      const sp = spd[i] * slow;
+      let mvx = ux * sp;
+      let mvy = uy * sp;
+      let separate = true;
+
+      switch (def.beh) {
+        case B.FLY: {
+          const w = Math.sin(this.time * 4 + f.ph[i] * 3) * 0.7;
+          mvx = (ux - uy * w) * sp;
+          mvy = (uy + ux * w) * sp;
+          separate = false;
+          break;
+        }
+        case B.RANGED:
+        case B.SUMMON:
+        case B.HEAL:
+        case B.SPIT: {
+          const keep = def.beh === B.HEAL ? 170 : def.beh === B.SUMMON ? 240 : 210;
+          if (d < keep - 40) {
+            mvx = -ux * sp;
+            mvy = -uy * sp;
+          } else if (d < keep + 30) {
+            mvx = -uy * sp * 0.5;
+            mvy = ux * sp * 0.5;
+          }
+          ai[i] -= dt;
+          if (ai[i] <= 0 && d < 460) {
+            ai[i] = def.cd ?? 2;
+            this.enemyAbility(i, def, ux, uy);
+          }
+          break;
+        }
+        case B.CHARGE: {
+          if (st[i] === 1) {
+            mvx = 0;
+            mvy = 0;
+            ai[i] -= dt;
+            if (ai[i] <= 0) {
+              st[i] = 2;
+              ai[i] = 0.45;
+            }
+          } else if (st[i] === 2) {
+            mvx = f.vx[i];
+            mvy = f.vy[i];
+            ai[i] -= dt;
+            if (ai[i] <= 0) {
+              st[i] = 0;
+              ai[i] = def.cd ?? 2.5;
+            }
+            separate = false;
+          } else {
+            ai[i] -= dt;
+            if (ai[i] <= 0 && d < 260) {
+              st[i] = 1;
+              ai[i] = 0.6;
+              f.vx[i] = ux * sp * 4.5;
+              f.vy[i] = uy * sp * 4.5;
+            }
+          }
+          break;
+        }
+        case B.EXPLODE: {
+          if (st[i] === 1) {
+            mvx = 0;
+            mvy = 0;
+            ai[i] -= dt;
+            flash[i] = ((this.time * 12) | 0) & 1 ? 0.05 : 0;
+            if (ai[i] <= 0) {
+              this.explodeEnemy(i);
+              continue;
+            }
+          } else if (pd < 46) {
+            st[i] = 1;
+            ai[i] = 0.55;
+          }
+          break;
+        }
+        case B.BLINK: {
+          ai[i] -= dt;
+          if (ai[i] <= 0 && d < 500) {
+            ai[i] = def.cd ?? 3;
+            this.impact(x[i], y[i] - 6, this.eyeCol[tp], PX * 2);
+            const a = Math.random() * TAU;
+            const rr = 90 + Math.random() * 50;
+            x[i] = this.px + Math.cos(a) * rr;
+            y[i] = this.py + Math.sin(a) * rr;
+            this.impact(x[i], y[i] - 6, this.eyeCol[tp], PX * 2);
+            this.flash(x[i], y[i], 90, 0.8, this.eyeCol[tp], 0.15);
+          }
+          break;
+        }
+        case B.BOSS: {
+          const res = this.bossBrain(i, dt, ux, uy, d, sp);
+          mvx = res[0];
+          mvy = res[1];
+          separate = false;
+          break;
+        }
+      }
+
+      if (separate && (i & 1) === parity) {
         const cx = Math.floor((x[i] - g.ox) / cell);
         const cy = Math.floor((y[i] - g.oy) / cell);
         let sx = 0;
@@ -899,20 +1345,183 @@ export class Game {
         y[i] += sy * 0.5;
       }
 
-      x[i] += ((dx / d) * spd[i] + kx[i]) * dt;
-      y[i] += ((dy / d) * spd[i] + ky[i]) * dt;
+      x[i] += (mvx + kx[i]) * dt;
+      y[i] += (mvy + ky[i]) * dt;
       kx[i] *= 0.85;
       ky[i] *= 0.85;
 
-      if (d < r[i] + pr && this.iframes <= 0) {
-        this.hp -= CFG.enemy.contactDmg * (1 + this.time / 240);
-        this.iframes = CFG.player.iframes;
-        this.shakeAmt = 6;
-        this.hurt = 1;
-        this.flash(this.px, this.py, 150, 1, COL.blood, 0.2);
-        this.stop(0.07);
+      if (pd < r[i] + pr) this.hurtPlayer(f.dmg[i] * timeDmg);
+    }
+
+    if (this.bossSpawned && this.bossI >= 0) this.hud.setBoss(f.hp[this.bossI] / f.mhp[this.bossI]);
+  }
+
+  private enemyAbility(i: number, def: EnemyDef, ux: number, uy: number) {
+    const f = this.enemies.f;
+    const x = f.x[i];
+    const y = f.y[i];
+    const tp = f.type[i];
+    const col = this.eyeCol[tp];
+    switch (def.beh) {
+      case B.RANGED: {
+        const v = def.proj ?? 180;
+        this.enemyShoot(x, y - 6, ux * v, uy * v, f.dmg[i] * 0.8, col);
+        this.impact(x + ux * 8, y - 6 + uy * 8, col, PX);
+        break;
+      }
+      case B.SUMMON: {
+        const child = def.child ?? 0;
+        for (let k = 0; k < (def.count ?? 3); k++) {
+          const a = Math.random() * TAU;
+          this.spawnEnemy(child, x + Math.cos(a) * 30, y + Math.sin(a) * 30, 0, 0);
+        }
+        this.impact(x, y, col, PX * 3);
+        this.flash(x, y, 120, 1, col, 0.2);
+        break;
+      }
+      case B.HEAL: {
+        this.forEachIn(x, y, 130, (j) => {
+          if (j === i || f.type[j] === BOSS) return;
+          f.hp[j] = Math.min(f.mhp[j], f.hp[j] + f.mhp[j] * 0.25);
+          this.spark(f.x[j], f.y[j] - 10, 0, -60, 0.4, 0x7dff6a);
+        });
+        this.impact(x, y, 0x7dff6a, PX * 4);
+        this.flash(x, y, 150, 0.9, 0x7dff6a, 0.25);
+        break;
+      }
+      case B.SPIT: {
+        this.hazard(this.px + (Math.random() - 0.5) * 40, this.py + (Math.random() - 0.5) * 40, 46, 0.9, 2.5, f.dmg[i], tex.hexNum(def.pal[3]));
+        this.impact(x, y - 8, col, PX * 2);
+        break;
       }
     }
+  }
+
+  private explodeEnemy(i: number) {
+    const f = this.enemies.f;
+    const x = f.x[i];
+    const y = f.y[i];
+    const col = tex.hexNum(this.roster[f.type[i]].pal[3]);
+    if (Math.hypot(this.px - x, this.py - y) < 64) this.hurtPlayer(f.dmg[i] * (1 + this.time / 300));
+    f.hp[i] = 0;
+    this.aoe(x, y, 60, f.dmg[i] * 2, 1, F_NOSET | F_NONUM);
+    this.impact(x, y, col, PX * 4);
+    this.flash(x, y, 200, 1.3, col, 0.25);
+    this.addShake(4);
+    for (let k = 0; k < 10; k++) {
+      const a = Math.random() * TAU;
+      this.spark(x, y, Math.cos(a) * 200, Math.sin(a) * 200, 0.3, col);
+    }
+  }
+
+  // ИИ босса: держит дистанцию и крутит паттерны; на половине здоровья звереет
+  private bossBrain(i: number, dt: number, ux: number, uy: number, d: number, sp: number): [number, number] {
+    const f = this.enemies.f;
+    const def = this.L.boss;
+    const x = f.x[i];
+    const y = f.y[i];
+    const rage = f.hp[i] < f.mhp[i] * 0.5;
+    const col = this.eyeCol[BOSS];
+    const acc = tex.hexNum(def.pal[3]);
+
+    if (f.st[i] === 1) {
+      f.ai[i] -= dt;
+      if (((this.time * 20) | 0) & 1) this.spark(x, y, (Math.random() - 0.5) * 200, (Math.random() - 0.5) * 200, 0.2, 0xff2d55);
+      if (f.ai[i] <= 0) {
+        f.st[i] = 2;
+        f.ai[i] = 0.7;
+      }
+      return [0, 0];
+    }
+    if (f.st[i] === 2) {
+      f.ai[i] -= dt;
+      if ((this.tick & 3) === 0) this.hazard(x, y, 36, 0.25, 0.2, f.dmg[i], 0xff2d55);
+      if (f.ai[i] <= 0) f.st[i] = 0;
+      return [f.vx[i], f.vy[i]];
+    }
+
+    let mv: [number, number] = d > 160 ? [ux * sp, uy * sp] : d < 110 ? [-ux * sp * 0.6, -uy * sp * 0.6] : [-uy * sp * 0.6, ux * sp * 0.6];
+
+    this.bossT -= dt;
+    if (this.bossT > 0) return mv;
+    const pats = def.patterns;
+    const p = pats[this.bossPat++ % pats.length];
+    this.bossT = rage ? 1.5 : 2.3;
+    const dmg = f.dmg[i];
+
+    switch (p) {
+      case 'burst': {
+        const n = rage ? 26 : 18;
+        const off = Math.random() * TAU;
+        for (let k = 0; k < n; k++) {
+          const a = off + (k / n) * TAU;
+          this.enemyShoot(x, y - 10, Math.cos(a) * 150, Math.sin(a) * 150, dmg * 0.6, col);
+        }
+        this.impact(x, y, col, PX * 5);
+        break;
+      }
+      case 'volley': {
+        const base = Math.atan2(uy, ux);
+        const waves = rage ? 3 : 2;
+        for (let w = 0; w < waves; w++) {
+          for (let k = -2; k <= 2; k++) {
+            const a = base + k * 0.18 + w * 0.05;
+            const v = 220 + w * 40;
+            this.enemyShoot(x, y - 10, Math.cos(a) * v, Math.sin(a) * v, dmg * 0.6, acc);
+          }
+        }
+        break;
+      }
+      case 'summon': {
+        for (let k = 0; k < (rage ? 10 : 6); k++) {
+          const a = (k / 6) * TAU;
+          this.spawnEnemy((Math.random() * 4) | 0, x + Math.cos(a) * 60, y + Math.sin(a) * 60, 0, 0);
+        }
+        this.impact(x, y, acc, PX * 5);
+        this.flash(x, y, 260, 1.2, acc, 0.3);
+        break;
+      }
+      case 'spikes': {
+        for (let k = 0; k < (rage ? 9 : 6); k++) {
+          const a = Math.random() * TAU;
+          const rr = 20 + Math.random() * 160;
+          this.hazard(this.px + Math.cos(a) * rr, this.py + Math.sin(a) * rr, 38, 0.9, 0.4, dmg * 0.9, acc);
+        }
+        break;
+      }
+      case 'slam': {
+        this.hazard(x, y, 120, 0.8, 0.3, dmg * 1.2, 0xff2d55);
+        const n = 14;
+        for (let k = 0; k < n; k++) {
+          const a = (k / n) * TAU;
+          this.enemyShoot(x, y, Math.cos(a) * 190, Math.sin(a) * 190, dmg * 0.5, acc);
+        }
+        this.addShake(5);
+        break;
+      }
+      case 'charge': {
+        f.st[i] = 1;
+        f.ai[i] = rage ? 0.5 : 0.8;
+        f.vx[i] = ux * 460;
+        f.vy[i] = uy * 460;
+        break;
+      }
+      case 'teleport': {
+        this.impact(x, y, col, PX * 5);
+        const a = Math.random() * TAU;
+        f.x[i] = this.px + Math.cos(a) * 170;
+        f.y[i] = this.py + Math.sin(a) * 170;
+        this.impact(f.x[i], f.y[i], col, PX * 5);
+        this.flash(f.x[i], f.y[i], 200, 1.3, col, 0.3);
+        for (let k = 0; k < 12; k++) {
+          const b = (k / 12) * TAU;
+          this.enemyShoot(f.x[i], f.y[i] - 10, Math.cos(b) * 130, Math.sin(b) * 130, dmg * 0.5, col);
+        }
+        mv = [0, 0];
+        break;
+      }
+    }
+    return mv;
   }
 
   private reapEnemies() {
@@ -921,24 +1530,109 @@ export class Game {
     for (let i = e.n - 1; i >= 0; i--) {
       if (f.hp[i] > 0) continue;
       this.kills++;
-      const kind = f.kind[i];
+      const tp = f.type[i];
+      const def = this.roster[tp];
       const x = f.x[i];
       const y = f.y[i];
-      this.dropGem(x, y, f.xp[i]);
-      this.burst(x, y, f.r[i], kind);
-      if (kind === 2) {
-        this.impact(x, y, COL.gold, PX * 4);
-        this.flash(x, y, 220, 1.3, COL.gold, 0.3);
-        this.shakeAmt = 8;
-        this.stop(0.09);
+      const big = f.sc[i] > 1.2;
+
+      for (const w of this.weapons) w.onKill?.(x, y, i);
+
+      if (tp === BOSS) {
+        this.impact(x, y, COL.gold, PX * 8);
+        this.flash(x, y, 500, 2, COL.gold, 1);
+        this.addShake(12);
+        this.stop(0.25);
+        for (let k = 0; k < 30; k++) this.dropGem(x + (Math.random() - 0.5) * 120, y + (Math.random() - 0.5) * 120, 5);
+        this.hud.hideBoss();
+        this.hud.announce('Босс повержен', '#ffc94a');
+        this.victoryT = 2.5;
       } else {
-        this.flash(x, y, 70, 0.7, COL.blood, 0.12);
+        this.dropGem(x, y, f.xp[i]);
+        if (f.elite[i]) {
+          this.placePickupAt('chest', x, y, 999);
+          this.impact(x, y, COL.gold, PX * 4);
+          this.flash(x, y, 240, 1.3, COL.gold, 0.3);
+          this.addShake(6);
+          this.stop(0.08);
+        } else if (Math.random() < 0.006) {
+          this.placePickupAt('heal', x, y, 30);
+        }
+        if (big) {
+          this.impact(x, y, COL.gold, PX * 3);
+          this.flash(x, y, 160, 1, COL.gold, 0.2);
+        } else {
+          this.flash(x, y, 70, 0.7, COL.blood, 0.12);
+        }
+      }
+      this.burst(x, y, big ? 20 : 11, tp);
+
+      if (def.beh === B.SPLIT && f.gen[i] === 0) {
+        for (let k = 0; k < 2; k++) this.spawnEnemy(tp, x + (k ? 10 : -10), y, 0, 1);
       }
       if (f.burn[i] > 0 && this.setCounts.pyro >= 4) {
         this.aoe(x, y, 40 * this.areaMul(), 12 * this.dmgMul(1), 1, F_NOSET | F_NONUM);
         this.impact(x, y, SCHOOLS.pyro.color, PX * 2);
       }
       e.kill(i);
+    }
+  }
+
+  // ---------- союзники ----------
+
+  private updateMinions(dt: number) {
+    const m = this.minions;
+    const f = m.f;
+    const e = this.enemies.f;
+    for (let i = m.n - 1; i >= 0; i--) {
+      f.life[i] -= dt;
+      if (f.life[i] <= 0) {
+        if (this.setCounts.necro >= 4) {
+          this.aoe(f.x[i], f.y[i], 50, f.dmg[i] * 2, 3, F_NONUM);
+          this.impact(f.x[i], f.y[i], SCHOOLS.necro.color, PX * 3);
+        }
+        m.kill(i);
+        continue;
+      }
+      let t = f.tg[i] | 0;
+      if (t < 0 || t >= this.enemies.n || e.hp[t] <= 0 || (this.tick + i) % 12 === 0) {
+        t = this.nearest(f.x[i], f.y[i], 280);
+        f.tg[i] = t;
+      }
+      let tx = this.px;
+      let ty = this.py;
+      if (t >= 0) {
+        tx = e.x[t];
+        ty = e.y[t];
+      }
+      const dx = tx - f.x[i];
+      const dy = ty - f.y[i];
+      const d = Math.hypot(dx, dy) || 1;
+      if (t >= 0 || d > 60) {
+        f.x[i] += (dx / d) * 120 * dt;
+        f.y[i] += (dy / d) * 120 * dt;
+      }
+      f.ai[i] -= dt;
+      if (t >= 0 && d < e.r[t] + 12 && f.ai[i] <= 0) {
+        f.ai[i] = 0.5;
+        this.hit(t, f.dmg[i], dx / d, dy / d, 3);
+        if (this.setCounts.necro >= 2) this.infect(t, 3, f.dmg[i] * 0.4);
+      }
+    }
+  }
+
+  private updateDecoys(dt: number) {
+    for (let k = this.decoys.length - 1; k >= 0; k--) {
+      const d = this.decoys[k];
+      d.life -= dt;
+      if (d.life > 0) continue;
+      this.aoe(d.x, d.y, d.r, d.dmg, 5);
+      this.impact(d.x, d.y, SCHOOLS.glitch.color, PX * 4);
+      this.flash(d.x, d.y, d.r * 3, 1.2, SCHOOLS.glitch.color, 0.25);
+      this.addShake(3);
+      d.s.visible = false;
+      this.freeDecoy.push(d.s);
+      this.decoys.splice(k, 1);
     }
   }
 
@@ -950,7 +1644,7 @@ export class Game {
     const e = this.enemies.f;
     const g = this.grid;
     const { head, next, cols, rows, cell } = g;
-    const reach = CFG.boltRadius + CFG.enemyMaxR;
+    const reach = CFG.boltRadius + CFG.enemyMaxR * 2;
     const trail = (this.tick & 1) === 0;
 
     for (let k = b.n - 1; k >= 0; k--) {
@@ -961,7 +1655,6 @@ export class Game {
         b.kill(k);
         continue;
       }
-
       const bx = f.x[k];
       const by = f.y[k];
       const elem = f.elem[k];
@@ -1005,6 +1698,28 @@ export class Game {
     }
   }
 
+  private updateShots(dt: number) {
+    const s = this.shots;
+    const f = s.f;
+    const hitR = CFG.player.radius + 4;
+    for (let i = s.n - 1; i >= 0; i--) {
+      f.x[i] += f.vx[i] * dt;
+      f.y[i] += f.vy[i] * dt;
+      f.life[i] -= dt;
+      const dx = f.x[i] - this.px;
+      const dy = f.y[i] - this.py;
+      if (f.life[i] <= 0) {
+        s.kill(i);
+        continue;
+      }
+      if (dx * dx + dy * dy < hitR * hitR) {
+        this.hurtPlayer(f.dmg[i]);
+        this.impact(f.x[i], f.y[i], s.sprites[i].tint as number, PX * 2);
+        s.kill(i);
+      }
+    }
+  }
+
   private updateZones(dt: number) {
     for (let i = this.zones.length - 1; i >= 0; i--) {
       const z = this.zones[i];
@@ -1022,6 +1737,26 @@ export class Game {
     }
   }
 
+  private updateHazards(dt: number) {
+    for (let i = this.hazards.length - 1; i >= 0; i--) {
+      const h = this.hazards[i];
+      if (h.delay > 0) {
+        h.delay -= dt;
+        if (h.delay <= 0) {
+          this.impact(h.x, h.y, h.color, PX * Math.max(2, Math.round(h.r / 16)));
+          this.flash(h.x, h.y, h.r * 2, 1, h.color, 0.2);
+        }
+        continue;
+      }
+      h.life -= dt;
+      if (!h.hit && Math.hypot(this.px - h.x, this.py - h.y) < h.r) {
+        h.hit = true;
+        this.hurtPlayer(h.dmg);
+      }
+      if (h.life <= 0) this.hazards.splice(i, 1);
+    }
+  }
+
   private updateVisuals(dt: number) {
     for (let i = this.arcs.length - 1; i >= 0; i--) {
       this.arcs[i].life -= dt;
@@ -1033,19 +1768,20 @@ export class Game {
     }
   }
 
-  // ---------- лут и эффекты ----------
+  // ---------- лут, предметы, эффекты ----------
 
   private dropGem(x: number, y: number, val: number) {
     const g = this.gems;
     const i = g.add();
+    const v = val * (1 + this.meta.xp);
     if (i < 0) {
-      g.f.val[(Math.random() * g.n) | 0] += val;
+      g.f.val[(Math.random() * g.n) | 0] += v;
       return;
     }
     g.f.x[i] = x;
     g.f.y[i] = y;
     g.f.v[i] = 0;
-    g.f.val[i] = val;
+    g.f.val[i] = v;
     g.f.mag[i] = 0;
     const sp = g.sprites[i];
     sp.tint = val >= 5 ? COL.gold : COL.crystal;
@@ -1076,10 +1812,79 @@ export class Game {
     }
   }
 
+  private placePickup(kind: Pickup['kind'], life: number) {
+    const a = Math.random() * TAU;
+    const rr = Math.min(this.viewHW, this.viewHH) * 0.75;
+    this.placePickupAt(kind, this.px + Math.cos(a) * rr, this.py + Math.sin(a) * rr, life);
+  }
+
+  private placePickupAt(kind: Pickup['kind'], x: number, y: number, life: number) {
+    const s = this.freePick.pop();
+    if (!s) return;
+    s.texture = kind === 'heal' ? tex.healOrbTex() : kind === 'chest' ? tex.chestTex() : kind === 'shrine' ? tex.shrineTex() : tex.fountainTex();
+    s.visible = true;
+    s.position.set(Math.round(x), Math.round(y));
+    this.pickups.push({ kind, x, y, life, s });
+  }
+
+  private updatePickups(dt: number) {
+    for (let k = this.pickups.length - 1; k >= 0; k--) {
+      const p = this.pickups[k];
+      p.life -= dt;
+      const d = Math.hypot(this.px - p.x, this.py - p.y);
+      const take = d < 22;
+      if (!take && p.life > 0) continue;
+      p.s.visible = false;
+      this.freePick.push(p.s);
+      this.pickups.splice(k, 1);
+      if (!take) continue;
+
+      switch (p.kind) {
+        case 'heal':
+          this.heal(this.stats.maxHp * 0.25);
+          this.impact(p.x, p.y, COL.blood, PX * 3);
+          break;
+        case 'fountain':
+          this.heal(this.stats.maxHp * 0.5);
+          this.impact(p.x, p.y, COL.blood, PX * 5);
+          this.flash(p.x, p.y, 200, 1.2, COL.blood, 0.4);
+          this.hud.announce('Омут исцеления', '#ff5a7a');
+          break;
+        case 'chest':
+          this.run.chests++;
+          this.impact(p.x, p.y, COL.gold, PX * 5);
+          this.flash(p.x, p.y, 240, 1.4, COL.gold, 0.4);
+          this.openGear(true);
+          break;
+        case 'shrine': {
+          this.run.shrines++;
+          const roll = (Math.random() * 4) | 0;
+          if (roll === 0) {
+            this.rage = 20;
+            this.hud.announce('Святилище ярости: урон +60%', '#ff5a5a');
+          } else if (roll === 1) {
+            this.haste = 20;
+            this.hud.announce('Святилище спешки: скорость и перезарядка', '#3ef0ff');
+          } else if (roll === 2) {
+            for (let i = 0; i < this.gems.n; i++) this.gems.f.mag[i] = 1;
+            this.hud.announce('Святилище жадности: весь опыт к тебе', '#c46bff');
+          } else {
+            this.conduit = 15;
+            this.hud.announce('Святилище-проводник: молнии 15 секунд', '#3ef0ff');
+          }
+          this.impact(p.x, p.y, COL.gold, PX * 5);
+          this.flash(p.x, p.y, 260, 1.4, COL.gold, 0.5);
+          break;
+        }
+      }
+    }
+  }
+
   private burst(x: number, y: number, r: number, kind: number) {
     const big = r > 15;
     const gp = this.gibs;
     const gf = gp.f;
+    const col = kind < this.roster.length ? tex.hexNum(this.roster[kind].pal[0]) : COL.blood;
     const gibCount = big ? 14 : 7;
     for (let k = 0; k < gibCount; k++) {
       const i = gp.add();
@@ -1091,15 +1896,13 @@ export class Game {
       gf.vx[i] = Math.cos(a) * v;
       gf.vy[i] = Math.sin(a) * v;
       gf.life[i] = gf.max[i] = 0.5 + Math.random() * 0.5;
-      gp.sprites[i].tint = kind === 2 && k % 2 ? COL.crystal : GIB_COLORS[k % GIB_COLORS.length];
+      gp.sprites[i].tint = k % 3 === 2 ? col : GIB_COLORS[k % GIB_COLORS.length];
     }
-
     for (let k = 0; k < (big ? 8 : 4); k++) {
       const a = Math.random() * TAU;
       const v = 120 + Math.random() * 160;
       this.spark(x, y, Math.cos(a) * v, Math.sin(a) * v, 0.2 + Math.random() * 0.15, k & 1 ? COL.blood : COL.gold);
     }
-
     const d = this.decals;
     const i = d.add();
     if (i >= 0) {
@@ -1110,7 +1913,6 @@ export class Game {
       s.texture = this.splatTex[(Math.random() * this.splatTex.length) | 0];
       s.rotation = ((Math.random() * 4) | 0) * (Math.PI / 2);
       if (big) s.scale.set(PX * 2);
-      if (kind === 2) s.tint = 0xb080ff;
     }
   }
 
@@ -1161,6 +1963,58 @@ export class Game {
     }
   }
 
+  // ---------- декорации мира: чанки по хешу координат ----------
+
+  private updateProps() {
+    const L = this.L;
+    const cx0 = Math.floor((this.px - this.viewHW - 80) / CHUNK);
+    const cx1 = Math.floor((this.px + this.viewHW + 80) / CHUNK);
+    const cy0 = Math.floor((this.py - this.viewHH - 80) / CHUNK);
+    const cy1 = Math.floor((this.py + this.viewHH + 120) / CHUNK);
+
+    for (const [key, list] of this.chunks) {
+      const [cx, cy] = key.split(',').map(Number);
+      if (cx >= cx0 && cx <= cx1 && cy >= cy0 && cy <= cy1) continue;
+      for (const p of list) {
+        p.s.visible = false;
+        this.freeProps.push(p.s);
+      }
+      this.chunks.delete(key);
+    }
+
+    const totalW = L.props.reduce((s, p) => s + p.weight, 0);
+    for (let cy = cy0; cy <= cy1; cy++) {
+      for (let cx = cx0; cx <= cx1; cx++) {
+        const key = `${cx},${cy}`;
+        if (this.chunks.has(key)) continue;
+        const list: PropSpr[] = [];
+        const count = 1 + ((hash(cx, cy, this.levelIdx) * 4) | 0);
+        for (let k = 0; k < count; k++) {
+          const s = this.freeProps.pop();
+          if (!s) break;
+          let r = hash(cx, cy, 100 + k) * totalW;
+          let def = L.props[0];
+          for (const p of L.props) {
+            r -= p.weight;
+            if (r <= 0) {
+              def = p;
+              break;
+            }
+          }
+          const x = (cx + hash(cx, cy, 200 + k)) * CHUNK;
+          const y = (cy + hash(cx, cy, 300 + k)) * CHUNK;
+          s.texture = tex.propTex(def.kind, def.pal);
+          s.position.set(Math.round(x), Math.round(y));
+          s.visible = true;
+          s.alpha = def.kind === 'crack' || def.kind === 'rune' ? 0.85 : 1;
+          const anim = def.anim ? [tex.propTex(def.kind, def.pal), tex.propTex(def.anim, def.pal)] : null;
+          list.push({ s, light: def.light ?? -1, x, y, anim });
+        }
+        this.chunks.set(key, list);
+      }
+    }
+  }
+
   // ================= арсенал и снаряжение =================
 
   private addWeapon(def: WeaponDef) {
@@ -1172,12 +2026,13 @@ export class Game {
   private recountSets() {
     for (const id of SCHOOL_ORDER) this.setCounts[id] = 0;
     for (const w of this.weapons) this.setCounts[w.def.school]++;
+    for (const id of SCHOOL_ORDER) this.run.maxSet = Math.max(this.run.maxSet, this.setCounts[id]);
   }
 
   private equip(g: Gear) {
     const oldMax = this.stats.maxHp;
     this.gear[g.slot] = g;
-    this.stats = computeStats(this.gear);
+    this.stats = computeStats(this.gear, this.meta);
     if (this.stats.maxHp > oldMax) this.heal(this.stats.maxHp - oldMax);
     this.hp = Math.min(this.hp, this.stats.maxHp);
     this.refreshSlots();
@@ -1185,12 +2040,7 @@ export class Game {
 
   private refreshSlots() {
     this.hud.setSlots(
-      this.weapons.map((w) => ({
-        tag: w.def.tag,
-        css: SCHOOLS[w.def.school].css,
-        level: w.level,
-        evolved: w.evolved,
-      })),
+      this.weapons.map((w) => ({ tag: w.def.tag, css: SCHOOLS[w.def.school].css, level: w.level, evolved: w.evolved })),
       this.gear.map((g, k) => ({ glyph: GEAR_GLYPH[k], filled: !!g })),
     );
   }
@@ -1209,16 +2059,13 @@ export class Game {
 
   private openLevelUp() {
     const resolving = this.level - this.pending + 1;
-    if (resolving % 5 === 0) this.openGear();
+    if (resolving % 5 === 0) this.openGear(false);
     else this.openWeapons();
   }
 
   private openWeapons() {
     const opts: Option[] = [];
-
-    const evo = this.weapons.find(
-      (w) => w.level >= 8 && !w.evolved && gearHasElem(this.gear, SCHOOLS[w.def.school].elem),
-    );
+    const evo = this.weapons.find((w) => w.level >= 8 && !w.evolved && gearHasElem(this.gear, SCHOOLS[w.def.school].elem));
     if (evo) {
       opts.push({
         card: {
@@ -1231,6 +2078,7 @@ export class Game {
         },
         act: () => {
           evo.evolved = true;
+          this.run.evolutions++;
           this.impact(this.px, this.py, COL.gold, PX * 6);
           this.flash(this.px, this.py, 320, 1.5, COL.gold, 0.5);
           this.addShake(8);
@@ -1242,12 +2090,7 @@ export class Game {
     for (const w of this.weapons) {
       if (w.level >= 8) continue;
       pool.push({
-        card: {
-          kicker: `Ур. ${w.level} → ${w.level + 1}`,
-          title: w.def.name,
-          lines: [w.def.perks[w.level - 1]],
-          badge: this.schoolBadge(w.def),
-        },
+        card: { kicker: `Ур. ${w.level} → ${w.level + 1}`, title: w.def.name, lines: [w.def.perks[w.level - 1]], badge: this.schoolBadge(w.def) },
         act: () => {
           w.level++;
         },
@@ -1257,31 +2100,20 @@ export class Game {
       for (const def of ARSENAL) {
         if (this.weapons.some((w) => w.def === def)) continue;
         pool.push({
-          card: {
-            kicker: 'Новое',
-            title: def.name,
-            lines: [def.desc],
-            badge: this.schoolBadge(def),
-            note: this.setNote(def, this.setCounts[def.school] + 1),
-            isNew: true,
-          },
+          card: { kicker: 'Новое', title: def.name, lines: [def.desc], badge: this.schoolBadge(def), note: this.setNote(def, this.setCounts[def.school] + 1), isNew: true },
           act: () => this.addWeapon(def),
         });
       }
     }
     shuffle(pool);
     while (opts.length < 3 && pool.length) opts.push(pool.pop()!);
-
     if (opts.length === 0) {
-      opts.push({
-        card: { kicker: 'Ремонт', title: 'Нанопатч', lines: ['Полностью восстанавливает здоровье'] },
-        act: () => this.heal(Infinity),
-      });
+      opts.push({ card: { kicker: 'Ремонт', title: 'Нанопатч', lines: ['Полностью восстанавливает здоровье'] }, act: () => this.heal(Infinity) });
     }
-    this.present('Новый уровень', 'Выбери модуль', opts);
+    this.present('Новый уровень', 'Выбери модуль', opts, false);
   }
 
-  private openGear() {
+  private openGear(fromChest: boolean) {
     const owned = [...new Set(this.weapons.map((w) => SCHOOLS[w.def.school].elem))];
     let items = [rollGear(owned), rollGear(owned), rollGear(owned)];
 
@@ -1306,28 +2138,35 @@ export class Game {
           act: () => this.equip(g),
         };
       });
-      this.present('Снаряжение', 'Выбери имплант', opts, this.rerolls > 0 ? () => {
-        this.rerolls--;
-        items = [rollGear(owned), rollGear(owned), rollGear(owned)];
-        show();
-      } : undefined);
+      this.present(
+        fromChest ? 'Сундук' : 'Снаряжение',
+        'Выбери имплант',
+        opts,
+        fromChest,
+        this.rerolls > 0
+          ? () => {
+              this.rerolls--;
+              items = [rollGear(owned), rollGear(owned), rollGear(owned)];
+              show();
+            }
+          : undefined,
+      );
     };
     show();
   }
 
-  private present(title: string, sub: string, opts: Option[], reroll?: () => void) {
+  private present(title: string, sub: string, opts: Option[], extra: boolean, reroll?: () => void) {
     this.paused = true;
-    this.impact(this.px, this.py, COL.gold, PX * 4);
-    this.flash(this.px, this.py, 240, 1.2, COL.gold, 0.4);
     this.hud.showChoice(
       title,
       sub,
       opts.map((o) => o.card),
       (i) => {
         opts[i].act();
-        this.pending--;
+        if (!extra) this.pending--;
         this.hud.hideChoice();
         this.paused = false;
+        this.recountSets();
         this.refreshSlots();
         if (this.pending > 0) this.openLevelUp();
       },
@@ -1340,7 +2179,6 @@ export class Game {
   private render() {
     const w = this.app.screen.width;
     const h = this.app.screen.height;
-
     const P = Math.max(2, Math.min(5, Math.round((Math.min(w, h) / 560) * PX)));
     this.zoom = P / PX;
     const z = this.zoom;
@@ -1361,17 +2199,38 @@ export class Game {
     this.bg.height = h;
     this.bg.tileScale.set(P);
     this.bg.tilePosition.set(wx, wy);
+    this.fog.width = w;
+    this.fog.height = h;
+    this.fog.tileScale.set(P * 2.5);
+    this.fog.tilePosition.set(wx * 0.6 + this.time * 12, wy * 0.6 + this.time * 5);
 
-    // --- свет и векторные эффекты кадра ---
+    this.updateProps();
+
     this.nL = 0;
     const fxG = this.fxG;
     const groundG = this.groundG;
     fxG.clear();
     groundG.clear();
+    const t = this.time;
 
-    if (!this.over) this.light(this.px, this.py - 6, 170, 0.85, COL.arcane);
-    for (let i = 0; i < this.nF; i++) {
-      this.light(this.fx[i], this.fy[i], this.fr[i], this.fs[i] * (this.fl[i] / this.fm[i]), this.fc[i]);
+    if (!this.over) this.light(this.px, this.py - 6, 190, 0.85, this.L.torch);
+    for (let i = 0; i < this.nF; i++) this.light(this.fx[i], this.fy[i], this.fr[i], this.fs[i] * (this.fl[i] / this.fm[i]), this.fc[i]);
+
+    for (const list of this.chunks.values()) {
+      for (const p of list) {
+        if (p.anim) p.s.texture = p.anim[((t * 7 + p.x) | 0) & 1];
+        if (p.light >= 0 && Math.abs(p.x - this.px) < this.viewHW + 100 && Math.abs(p.y - this.py) < this.viewHH + 100) {
+          this.light(p.x, p.y - 14, 150, 0.55 + Math.sin(t * 9 + p.x) * 0.08, p.light);
+        }
+      }
+    }
+
+    for (const p of this.pickups) {
+      const bob = Math.round(Math.sin(t * 4 + p.x) * 2);
+      p.s.position.set(Math.round(p.x), Math.round(p.y) + bob);
+      const col = p.kind === 'heal' || p.kind === 'fountain' ? COL.blood : COL.gold;
+      this.light(p.x, p.y - 10, 120, 0.9, col);
+      if (p.kind === 'shrine' || p.kind === 'fountain') groundG.circle(p.x, p.y, 24).stroke({ width: 2, color: col, alpha: 0.35 + Math.sin(t * 5) * 0.15 });
     }
 
     for (const zn of this.zones) {
@@ -1379,6 +2238,16 @@ export class Game {
       groundG.circle(zn.x, zn.y, zn.r).fill({ color: zn.color, alpha: 0.16 * k });
       groundG.circle(zn.x, zn.y, zn.r).stroke({ width: 2, color: zn.color, alpha: 0.45 * k });
       this.light(zn.x, zn.y, zn.r * 1.6, 0.45 * k, zn.color);
+    }
+    for (const hz of this.hazards) {
+      if (hz.delay > 0) {
+        const p = 1 - hz.delay / hz.max;
+        groundG.circle(hz.x, hz.y, hz.r).stroke({ width: 2, color: hz.color, alpha: 0.5 + p * 0.4 });
+        groundG.circle(hz.x, hz.y, hz.r * p).fill({ color: hz.color, alpha: 0.22 });
+      } else {
+        groundG.circle(hz.x, hz.y, hz.r).fill({ color: hz.color, alpha: 0.45 });
+        this.light(hz.x, hz.y, hz.r * 2, 0.9, hz.color);
+      }
     }
     for (const a of this.arcs) {
       const k = a.life / a.max;
@@ -1393,19 +2262,24 @@ export class Game {
       fxG.rect(p.x - pw / 6, p.y - 520, pw / 3, 520).fill({ color: 0xffffff, alpha: 0.9 * k });
       this.light(p.x, p.y, 150, 1.2 * k, p.color);
     }
+    for (const dcy of this.decoys) {
+      dcy.s.position.set(Math.round(dcy.x), Math.round(dcy.y));
+      dcy.s.alpha = 0.5 + Math.sin(t * 20) * 0.25;
+      dcy.s.tint = SCHOOLS.glitch.color;
+      this.light(dcy.x, dcy.y, 100, 0.8, SCHOOLS.glitch.color);
+    }
     for (const wpn of this.weapons) wpn.draw(fxG, groundG);
 
     const b = this.bullets;
-    for (let i = 0; i < b.n && this.nL < CFG.maxLights; i++) {
-      this.light(b.f.x[i], b.f.y[i], 90, 0.8, SCHOOLS[SCHOOL_ORDER[b.f.elem[i]]].color);
-    }
+    for (let i = 0; i < b.n && this.nL < CFG.maxLights; i++) this.light(b.f.x[i], b.f.y[i], 90, 0.8, SCHOOLS[SCHOOL_ORDER[b.f.elem[i]]].color);
+    const sh = this.shots;
+    for (let i = 0; i < sh.n && this.nL < CFG.maxLights; i++) this.light(sh.f.x[i], sh.f.y[i], 70, 0.7, sh.sprites[i].tint as number);
 
     // --- враги с динамическим rim light ---
     const nL = this.nL;
     const { lx, ly, lr, ls, lc } = this;
-    const t = this.time;
-    const halfW = this.viewHW + 48;
-    const halfH = this.viewHH + 48;
+    const halfW = this.viewHW + 80;
+    const halfH = this.viewHH + 80;
     const e = this.enemies;
     const ef = e.f;
 
@@ -1420,26 +2294,31 @@ export class Game {
         continue;
       }
       s.visible = true;
-
-      const kind = ef.kind[i];
-      const frames = this.enemyTex[kind];
+      const tp = ef.type[i];
+      const frames = this.enemyTex[tp];
       const flashing = ef.flash[i] > 0;
-      const frozen = ef.stun[i] > 0;
-      const frame = flashing || frozen ? 0 : ((t * 5 + ef.ph[i]) | 0) & 1;
+      const still = ef.stun[i] > 0 || ef.frz[i] > 0 || ef.stz[i] > 0;
+      const frame = flashing || still ? 0 : ((t * 5 + ef.ph[i]) | 0) & 1;
       s.texture = flashing ? frames[2] : frames[frame];
-      const sc = kind === 2 ? PX * 2 : PX;
+      s.tint = ef.frz[i] > 0 ? 0x9ad8ff : ef.stz[i] > 0 ? 0xff9af0 : 0xffffff;
+      const sc = PX * ef.sc[i];
       const flip = ex > this.px ? -1 : 1;
       const rx = Math.round(ex);
       const ry = Math.round(ey);
       s.scale.set(sc * flip, sc);
       s.position.set(rx, ry);
 
+      if (this.roster[tp].beh === B.CHARGE && ef.st[i] === 1) {
+        const l = Math.hypot(ef.vx[i], ef.vy[i]) || 1;
+        groundG.moveTo(ex, ey).lineTo(ex + (ef.vx[i] / l) * 140, ey + (ef.vy[i] / l) * 140).stroke({ width: 3, color: 0xff2d55, alpha: 0.5 });
+      }
+
       let ax = 0;
       let ay = 0;
       let total = 0;
       let best = 0;
       let col = 0xffffff;
-      const cy = ey - 6;
+      const cy = ey - 6 * ef.sc[i];
       for (let l = 0; l < nL; l++) {
         const dx = lx[l] - ex;
         const dy = ly[l] - cy;
@@ -1457,20 +2336,23 @@ export class Game {
           col = lc[l];
         }
       }
-      // горящих подсвечивает их же пламя снизу
       if (ef.burn[i] > 0) {
         ay += 0.5;
         total += 0.5;
         if (best < 0.5) col = 0xff7a2d;
       }
-
+      if (ef.elite[i] || tp === BOSS) {
+        ay -= 0.6;
+        total += 0.6;
+        if (best < 0.6) col = COL.gold;
+      }
       if (total < 0.04 || flashing) {
         rim.visible = false;
         continue;
       }
       const dir = (((Math.round(Math.atan2(ay, ax * flip) / OCT) % 8) + 8) % 8) | 0;
       rim.visible = true;
-      rim.texture = this.rimTex[frame][dir];
+      rim.texture = this.rimTex[tp][frame][dir];
       rim.tint = col;
       rim.alpha = Math.min(1, total * 1.4);
       rim.scale.set(sc * flip, sc);
@@ -1480,6 +2362,15 @@ export class Game {
     this.rimShown = e.n;
 
     for (let i = 0; i < b.n; i++) b.sprites[i].position.set(Math.round(b.f.x[i]), Math.round(b.f.y[i]));
+    for (let i = 0; i < sh.n; i++) sh.sprites[i].position.set(Math.round(sh.f.x[i]), Math.round(sh.f.y[i]));
+
+    const mn = this.minions;
+    for (let i = 0; i < mn.n; i++) {
+      const s = mn.sprites[i];
+      s.texture = this.minionTex[((t * 6 + i) | 0) & 1];
+      s.position.set(Math.round(mn.f.x[i]), Math.round(mn.f.y[i]));
+      this.light(mn.f.x[i], mn.f.y[i], 60, 0.4, SCHOOLS.necro.color);
+    }
 
     const g = this.gems;
     const bob = Math.round(Math.sin(t * 5) * 1.5);
@@ -1518,14 +2409,17 @@ export class Game {
     this.numbers.render();
 
     const walk = this.moving && !this.paused ? ((t * 8) | 0) & 1 : 0;
-    this.player.texture = this.mageTex[walk];
-    this.player.scale.set(PX * this.face, PX);
+    const mech = this.mechT > 0;
+    this.player.texture = mech ? this.mechTex[walk] : this.mageTex[walk];
+    const psc = mech ? PX * 1.4 : PX;
+    this.player.scale.set(psc * this.face, psc);
     this.player.position.set(Math.round(this.px), Math.round(this.py));
-    const blink = this.dashT <= 0 && this.iframes > 0 && ((t * 20) | 0) & 1;
+    const blink = this.dashT <= 0 && !mech && this.iframes > 0 && ((t * 20) | 0) & 1;
     this.player.visible = !this.over && !blink;
+    this.player.tint = this.rage > 0 ? 0xffb0b0 : 0xffffff;
 
     this.glow.position.set(this.px, this.py);
-    this.glow.alpha = 0.18 + Math.sin(t * 2.2) * 0.03;
+    this.glow.alpha = 0.2 + Math.sin(t * 2.2) * 0.03;
 
     const hb = this.hpBar;
     hb.clear();
@@ -1541,12 +2435,29 @@ export class Game {
 
     this.vignette.width = w;
     this.vignette.height = h;
-
     const ho = this.hurtOverlay;
     ho.clear();
     if (this.hurt > 0) ho.rect(0, 0, w, h).fill({ color: COL.blood, alpha: this.hurt * 0.22 });
 
+    // стрелки к важным объектам за краем экрана
+    const sg = this.screenG;
+    sg.clear();
+    const targets: [number, number, number][] = this.pickups.filter((p) => p.kind !== 'heal').map((p) => [p.x, p.y, p.kind === 'fountain' ? COL.blood : COL.gold]);
+    if (this.bossI >= 0) targets.push([ef.x[this.bossI], ef.y[this.bossI], COL.blood]);
+    for (const [ox, oy, col] of targets) {
+      const dx = ox - this.px;
+      const dy = oy - this.py;
+      if (Math.abs(dx) < this.viewHW - 20 && Math.abs(dy) < this.viewHH - 20) continue;
+      const a = Math.atan2(dy, dx);
+      const k = Math.min((w / 2 - 34) / Math.abs(Math.cos(a) || 1e-6), (h / 2 - 34) / Math.abs(Math.sin(a) || 1e-6));
+      const ax = w / 2 + Math.cos(a) * k;
+      const ay = h / 2 + Math.sin(a) * k;
+      const c = Math.cos(a);
+      const s = Math.sin(a);
+      sg.poly([ax + c * 12, ay + s * 12, ax - c * 6 - s * 8, ay - s * 6 + c * 8, ax - c * 6 + s * 8, ay - s * 6 - c * 8]).fill({ color: col, alpha: 0.9 });
+    }
+
     this.hud.setDash(Math.max(0, this.dashCd / CFG.dash.cooldown));
-    this.hud.update(this.level, this.time, this.kills, this.xp / this.need);
+    this.hud.update(this.level, this.time, this.kills, this.xp / this.need, this.L.bossAt);
   }
 }

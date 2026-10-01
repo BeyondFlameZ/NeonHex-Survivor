@@ -50,7 +50,7 @@ export const SCHOOLS: Record<SchoolId, School> = {
     elem: 4,
     color: 0xffc94a,
     css: '#ffc94a',
-    set2: 'Дроны и турели получают твой шанс крита',
+    set2: 'Урон школы «Механика» +25%',
     set4: 'Во время трансформации турели стреляют вдвое чаще',
   },
   glitch: {

@@ -70,6 +70,16 @@ export class Input {
     window.addEventListener('blur', () => this.keys.clear());
   }
 
+  // между забегами — сбрасываем залипший палец/клавиши
+  reset() {
+    this.id = -1;
+    this.jx = this.jy = 0;
+    this.mx = this.my = 0;
+    this.keys.clear();
+    this.dashQ = false;
+    this.view.visible = false;
+  }
+
   queueDash() {
     this.dashQ = true;
   }

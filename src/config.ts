@@ -13,6 +13,9 @@ export const CFG = {
   maxGhosts: 40,
   maxNumbers: 200,
   maxLights: 96,
+  maxEnemyShots: 400,
+  maxMinions: 16,
+  maxProps: 160,
 
   cell: 48,
   gridCols: 96,

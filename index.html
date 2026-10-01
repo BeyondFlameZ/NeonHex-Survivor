@@ -7,29 +7,42 @@
     <meta name="mobile-web-app-capable" content="yes" />
     <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent" />
     <meta name="apple-mobile-web-app-title" content="Neon Hex" />
-    <meta name="theme-color" content="#0c0a1e" />
+    <meta name="theme-color" content="#07050a" />
     <title>Neon Hex</title>
     <link rel="preconnect" href="https://fonts.googleapis.com" />
     <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
-    <link href="https://fonts.googleapis.com/css2?family=Pixelify+Sans:wght@400;600;700&display=swap" rel="stylesheet" />
+    <link href="https://fonts.googleapis.com/css2?family=Cormorant+SC:wght@600;700&family=Pixelify+Sans:wght@400;600;700&display=swap" rel="stylesheet" />
   </head>
   <body>
     <div id="stage"></div>
 
-    <div id="hud">
-      <div class="xp"><div id="xp-fill"></div></div>
-      <div class="row">
-        <span id="lvl"></span>
-        <span id="time"></span>
-        <span id="kills"></span>
+    <div id="run-ui" hidden>
+      <div id="hud">
+        <div class="hud-top">
+          <span id="lvl"></span>
+          <div class="time-box">
+            <span id="time"></span>
+            <span id="boss-timer"></span>
+          </div>
+          <span id="kills"></span>
+        </div>
+        <div class="xp"><div id="xp-fill"></div></div>
+        <div class="slots">
+          <div id="wslots" class="slot-row"></div>
+          <div id="gslots" class="slot-row"></div>
+        </div>
       </div>
-      <div class="slots">
-        <div id="wslots" class="slot-row"></div>
-        <div id="gslots" class="slot-row"></div>
-      </div>
-    </div>
 
-    <button id="dash" class="dash ready" aria-label="Рывок"><span>Рывок</span></button>
+      <div id="bossbar" hidden>
+        <div id="boss-name"></div>
+        <div class="boss-frame"><div id="boss-fill"></div></div>
+      </div>
+
+      <div id="banner"></div>
+
+      <button id="pausebtn" class="icon-btn" aria-label="Пауза">II</button>
+      <button id="dash" class="dash ready" aria-label="Рывок"><span>Рывок</span></button>
+    </div>
 
     <div id="levelup" class="overlay" hidden>
       <div class="panel">
@@ -38,18 +51,31 @@
             <h2 id="lu-title" class="title gold">Новый уровень</h2>
             <p id="lu-sub" class="sub">Выбери модуль</p>
           </div>
-          <button id="reroll" class="reroll" hidden>Реролл</button>
+          <button id="reroll" class="btn small" hidden>Реролл</button>
         </div>
         <div id="choices"></div>
       </div>
     </div>
 
-    <div id="gameover" class="overlay" hidden>
-      <div class="panel">
-        <h2 class="title blood">Сигнал потерян</h2>
-        <p id="summary" class="sub"></p>
-        <button id="restart" class="primary">Играть снова</button>
+    <div id="pause" class="overlay" hidden>
+      <div class="panel narrow">
+        <h2 class="title gold">Пауза</h2>
+        <div class="btn-col">
+          <button id="p-resume" class="btn primary">Продолжить</button>
+          <button id="p-restart" class="btn">Начать заново</button>
+          <button id="p-quit" class="btn ghost">Сдаться и выйти</button>
+        </div>
       </div>
+    </div>
+
+    <div id="results" class="overlay" hidden>
+      <div id="results-body" class="panel narrow"></div>
+    </div>
+
+    <div id="menu" hidden>
+      <div class="embers"></div>
+      <div class="menu-top"><span id="menu-shards" class="shards"></span></div>
+      <div id="menu-body"></div>
     </div>
 
     <script type="module" src="./src/main.ts"></script>

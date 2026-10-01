@@ -132,8 +132,29 @@ export function statText(s: GearStat): string {
   }
 }
 
-export function computeStats(gear: (Gear | null)[]): Stats {
+export interface MetaStats {
+  dmg: number;
+  maxHp: number;
+  regen: number;
+  move: number;
+  pickup: number;
+  crit: number;
+  cd: number;
+  area: number;
+}
+
+export function computeStats(gear: (Gear | null)[], meta?: MetaStats): Stats {
   const s = baseStats();
+  if (meta) {
+    s.dmg += meta.dmg;
+    s.maxHp += meta.maxHp;
+    s.regen += meta.regen;
+    s.move += meta.move;
+    s.pickup += meta.pickup;
+    s.crit += meta.crit;
+    s.cd += meta.cd;
+    s.area += meta.area;
+  }
   for (const g of gear) {
     if (!g) continue;
     for (const st of g.stats) {

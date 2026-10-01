@@ -25,6 +25,8 @@ export interface Weapon {
   evolved: boolean;
   update(dt: number): void;
   draw(fx: Graphics, ground: Graphics): void;
+  onKill?(x: number, y: number, j: number): void;
+  onDash?(): void;
 }
 
 export abstract class BaseWeapon implements Weapon {
