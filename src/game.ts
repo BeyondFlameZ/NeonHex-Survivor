@@ -42,6 +42,7 @@ type BK = 'x' | 'y' | 'vx' | 'vy' | 'life' | 'dmg' | 'pierce' | 'last' | 'elem' 
 type SK = 'x' | 'y' | 'vx' | 'vy' | 'life' | 'dmg';
 type GK = 'x' | 'y' | 'v' | 'val' | 'mag';
 type PK = 'x' | 'y' | 'vx' | 'vy' | 'life' | 'max';
+type GBK = PK | 'z' | 'vz';
 type DK = 'x' | 'y' | 'life';
 type IK = 'x' | 'y' | 't';
 type HK = 'x' | 'y' | 'life' | 'max';
@@ -139,13 +140,14 @@ export class Game {
   private poolLayer = new Container();
   private pools: Sprite[] = [];
   private look: (typeof LOOK)[number];
-  private pickLayer = new Container();
+  // всё, что стоит на земле и имеет высоту: сортируется по Y, маг заходит за колонны
+  private actors = new Container();
 
   private bullets: Pool<BK>;
   private shots: Pool<SK>;
   private gems: Pool<GK>;
   private sparks: Pool<PK>;
-  private gibs: Pool<PK>;
+  private gibs: Pool<GBK>;
   private decals: Pool<DK>;
   private impacts: Pool<IK>;
   private ghosts: Pool<HK>;
@@ -307,13 +309,9 @@ export class Game {
 
     const decalLayer = new Container();
     const gemLayer = new Container();
-    const minionLayer = new Container();
-    const enemyLayer = new Container();
-    const rimLayer = new Container();
     const bulletLayer = new Container();
     const shotLayer = new Container();
     const ghostLayer = new Container();
-    const decoyLayer = new Container();
     const gibLayer = new Container();
     const sparkLayer = new Container();
     const impactLayer = new Container();
@@ -325,17 +323,16 @@ export class Game {
       CFG.maxEnemies,
       ['x', 'y', 'hp', 'mhp', 'spd', 'r', 'xp', 'flash', 'kx', 'ky', 'dcd', 'type', 'ph', 'burn', 'bdps', 'stun', 'chill', 'frz', 'inf', 'idps', 'stz', 'sacc', 'ai', 'st', 'vx', 'vy', 'dmg', 'kbr', 'elite', 'gen', 'sc'],
       this.enemyTex[0][0],
-      enemyLayer,
+      this.actors,
       'normal',
       PX,
     );
     this.bullets = new Pool<BK>(CFG.maxBullets, ['x', 'y', 'vx', 'vy', 'life', 'dmg', 'pierce', 'last', 'elem', 'aoe'], tex.boltTex(), bulletLayer, 'normal', PX);
     this.shots = new Pool<SK>(CFG.maxEnemyShots, ['x', 'y', 'vx', 'vy', 'life', 'dmg'], tex.orbTex(), shotLayer, 'normal', PX);
     this.ghosts = new Pool<HK>(CFG.maxGhosts, ['x', 'y', 'life', 'max'], tex.mageGhost(), ghostLayer, 'add', PX);
-    this.minions = new Pool<MK>(CFG.maxMinions, ['x', 'y', 'life', 'dmg', 'ai', 'tg'], this.minionTex[0], minionLayer, 'normal', PX);
-    const dot = tex.dotTex();
-    this.gibs = new Pool<PK>(CFG.maxGibs, ['x', 'y', 'vx', 'vy', 'life', 'max'], dot, gibLayer, 'normal', PX);
-    this.sparks = new Pool<PK>(CFG.maxSparks, ['x', 'y', 'vx', 'vy', 'life', 'max'], dot, sparkLayer, 'add', PX);
+    this.minions = new Pool<MK>(CFG.maxMinions, ['x', 'y', 'life', 'dmg', 'ai', 'tg'], this.minionTex[0], this.actors, 'normal', PX);
+    this.gibs = new Pool<GBK>(CFG.maxGibs, ['x', 'y', 'vx', 'vy', 'life', 'max', 'z', 'vz'], pixel, gibLayer, 'normal', PX);
+    this.sparks = new Pool<PK>(CFG.maxSparks, ['x', 'y', 'vx', 'vy', 'life', 'max'], pixel, sparkLayer, 'add', PX);
     this.impacts = new Pool<IK>(CFG.maxImpacts, ['x', 'y', 't'], this.impactTex[0], impactLayer, 'add', PX);
     this.numbers = new DamageNumbers(CFG.maxNumbers, numberLayer, tex.digitTextures());
 
@@ -344,7 +341,7 @@ export class Game {
       s.anchor.set(0.5);
       s.blendMode = 'add';
       s.visible = false;
-      rimLayer.addChild(s);
+      this.actors.addChild(s);
       this.rims.push(s);
     }
     for (let i = 0; i < CFG.maxProps; i++) {
@@ -360,7 +357,7 @@ export class Game {
       s.anchor.set(0.5, 0.8);
       s.scale.set(PX);
       s.visible = false;
-      this.pickLayer.addChild(s);
+      this.actors.addChild(s);
       this.freePick.push(s);
     }
     const lt = tex.lightTex();
@@ -379,13 +376,15 @@ export class Game {
       s.scale.set(PX);
       s.visible = false;
       s.blendMode = 'add';
-      decoyLayer.addChild(s);
+      this.actors.addChild(s);
       this.freeDecoy.push(s);
     }
 
     this.player = new Sprite(this.mageTex[0]);
     this.player.anchor.set(0.5);
     this.player.scale.set(PX);
+    this.actors.addChild(this.player);
+    this.actors.sortableChildren = true;
 
     this.world.addChild(
       this.glow,
@@ -395,15 +394,10 @@ export class Game {
       this.propLayer,
       this.layerGround,
       gemLayer,
-      this.pickLayer,
-      minionLayer,
-      enemyLayer,
-      rimLayer,
-      decoyLayer,
+      ghostLayer,
+      this.actors,
       bulletLayer,
       shotLayer,
-      ghostLayer,
-      this.player,
       this.layerFx,
       gibLayer,
       sparkLayer,
@@ -1027,7 +1021,7 @@ export class Game {
     this.updateGems(dt);
     this.updatePickups(dt);
     this.updateFx(this.sparks, dt, 0.9);
-    this.updateFx(this.gibs, dt, 0.86);
+    this.updateGibs(dt);
     this.updateTimed(this.decals, dt);
     this.updateTimed(this.ghosts, dt);
     this.updateImpacts(dt);
@@ -2222,12 +2216,14 @@ export class Game {
       const i = gp.add();
       if (i < 0) break;
       const a = Math.random() * TAU;
-      const v = (70 + Math.random() * 150) * (big ? 1.4 : 1);
+      const v = (40 + Math.random() * 90) * (big ? 1.4 : 1);
       gf.x[i] = x;
       gf.y[i] = y;
       gf.vx[i] = Math.cos(a) * v;
-      gf.vy[i] = Math.sin(a) * v;
-      gf.life[i] = gf.max[i] = 0.5 + Math.random() * 0.5;
+      gf.vy[i] = Math.sin(a) * v * 0.6;
+      gf.z[i] = 4 + Math.random() * 8;
+      gf.vz[i] = 90 + Math.random() * 170;
+      gf.life[i] = gf.max[i] = 0.9 + Math.random() * 0.6;
       gp.sprites[i].tint = k % 3 === 2 ? col : GIB_COLORS[k % GIB_COLORS.length];
     }
     for (let k = 0; k < (big ? 8 : 4); k++) {
@@ -2260,6 +2256,29 @@ export class Game {
       f.y[i] += f.vy[i] * dt;
       f.vx[i] *= friction;
       f.vy[i] *= friction;
+    }
+  }
+
+  // ошмётки летят по дуге и пару раз отскакивают от пола
+  private updateGibs(dt: number) {
+    const p = this.gibs;
+    const f = p.f;
+    for (let i = p.n - 1; i >= 0; i--) {
+      f.life[i] -= dt;
+      if (f.life[i] <= 0) {
+        p.kill(i);
+        continue;
+      }
+      f.vz[i] -= 700 * dt;
+      f.z[i] += f.vz[i] * dt;
+      if (f.z[i] <= 0) {
+        f.z[i] = 0;
+        f.vz[i] = Math.abs(f.vz[i]) < 40 ? 0 : -f.vz[i] * 0.35;
+        f.vx[i] *= 0.55;
+        f.vy[i] *= 0.55;
+      }
+      f.x[i] += f.vx[i] * dt;
+      f.y[i] += f.vy[i] * dt;
     }
   }
 
@@ -2337,6 +2356,11 @@ export class Game {
           const y = (cy + hash(cx, cy, 300 + k)) * CHUNK;
           s.texture = tex.propTex(def.kind, def.pal);
           s.position.set(Math.round(x), Math.round(y));
+          if (tex.FLAT_PROPS.has(def.kind)) this.propLayer.addChild(s);
+          else {
+            this.actors.addChild(s);
+            s.zIndex = Math.round(y) * 2;
+          }
           s.visible = true;
           s.alpha = def.kind === 'crack' || def.kind === 'rune' ? 0.85 : 1;
           const anim = def.anim ? [tex.propTex(def.kind, def.pal), tex.propTex(def.anim, def.pal)] : null;
@@ -2523,7 +2547,10 @@ export class Game {
   private render() {
     const w = this.app.screen.width;
     const h = this.app.screen.height;
-    const P = Math.max(2, Math.min(5, (Math.min(w, h) / 560) * PX));
+    // тексель = целое число физических пикселей, иначе чёткие пиксели дрожат при движении
+    const res = this.app.renderer.resolution || 1;
+    const texDev = Math.max(2, Math.min(10, Math.round(((Math.min(w, h) / 560) * PX * res) / 2)));
+    const P = (texDev * 2) / res;
     this.zoom = P / PX;
     const z = this.zoom;
     this.viewHW = w / 2 / z;
@@ -2535,8 +2562,8 @@ export class Game {
       sx = (Math.random() * 2 - 1) * this.shakeAmt;
       sy = (Math.random() * 2 - 1) * this.shakeAmt;
     }
-    const wx = Math.round(w / 2 - this.px * z + sx);
-    const wy = Math.round(h / 2 - this.py * z + sy);
+    const wx = Math.round((w / 2 - this.px * z + sx) * res) / res;
+    const wy = Math.round((h / 2 - this.py * z + sy) * res) / res;
     this.world.scale.set(z);
     this.world.position.set(wx, wy);
     this.bg.width = w;
@@ -2584,6 +2611,7 @@ export class Game {
     for (const p of this.pickups) {
       const bob = Math.round(Math.sin(t * 4 + p.x) * 2);
       p.s.position.set(Math.round(p.x), Math.round(p.y) + bob);
+      p.s.zIndex = Math.round(p.y) * 2;
       const col = p.kind === 'heal' || p.kind === 'fountain' ? COL.blood : COL.gold;
       this.light(p.x, p.y - 10, 120, 0.9, col);
       pool(p.x, p.y - 6, 0.55, 0.3, col);
@@ -2623,6 +2651,7 @@ export class Game {
     }
     for (const dcy of this.decoys) {
       dcy.s.position.set(Math.round(dcy.x), Math.round(dcy.y));
+      dcy.s.zIndex = Math.round(dcy.y + 7 * PX) * 2 + 1;
       dcy.s.alpha = 0.5 + Math.sin(t * 20) * 0.25;
       dcy.s.tint = SCHOOLS.glitch.color;
       this.light(dcy.x, dcy.y, 100, 0.8, SCHOOLS.glitch.color);
@@ -2666,6 +2695,8 @@ export class Game {
       const ry = Math.round(ey);
       s.scale.set(sc * flip, sc);
       s.position.set(rx, ry);
+      const depth = Math.round(ey + 7 * PX * ef.sc[i]) * 2;
+      s.zIndex = depth;
 
       if (this.roster[tp].beh === B.CHARGE && ef.st[i] === 1) {
         const l = Math.hypot(ef.vx[i], ef.vy[i]) || 1;
@@ -2716,6 +2747,7 @@ export class Game {
       rim.alpha = Math.min(1, total * 1.4);
       rim.scale.set(sc * flip, sc);
       rim.position.set(rx, ry);
+      rim.zIndex = depth + 1;
     }
     for (let i = e.n; i < this.rimShown; i++) this.rims[i].visible = false;
     this.rimShown = e.n;
@@ -2728,6 +2760,7 @@ export class Game {
       const s = mn.sprites[i];
       s.texture = this.minionTex[((t * 6 + i) | 0) & 1];
       s.position.set(Math.round(mn.f.x[i]), Math.round(mn.f.y[i]));
+      s.zIndex = Math.round(mn.f.y[i] + 7 * PX) * 2;
       this.light(mn.f.x[i], mn.f.y[i], 60, 0.4, SCHOOLS.necro.color);
     }
 
@@ -2735,13 +2768,17 @@ export class Game {
     const bob = Math.round(Math.sin(t * 5) * 1.5);
     for (let i = 0; i < g.n; i++) g.sprites[i].position.set(Math.round(g.f.x[i]), Math.round(g.f.y[i]) + bob);
 
-    for (const p of [this.sparks, this.gibs]) {
-      const pf = p.f;
-      for (let i = 0; i < p.n; i++) {
-        const s = p.sprites[i];
-        s.position.set(Math.round(pf.x[i]), Math.round(pf.y[i]));
-        s.alpha = Math.min(1, (pf.life[i] / pf.max[i]) * 2);
-      }
+    const sp = this.sparks;
+    for (let i = 0; i < sp.n; i++) {
+      const s = sp.sprites[i];
+      s.position.set(Math.round(sp.f.x[i]), Math.round(sp.f.y[i]));
+      s.alpha = Math.min(1, (sp.f.life[i] / sp.f.max[i]) * 2);
+    }
+    const gb = this.gibs;
+    for (let i = 0; i < gb.n; i++) {
+      const s = gb.sprites[i];
+      s.position.set(Math.round(gb.f.x[i]), Math.round(gb.f.y[i] - gb.f.z[i]));
+      s.alpha = Math.min(1, (gb.f.life[i] / gb.f.max[i]) * 3);
     }
 
     const d = this.decals;
@@ -2773,6 +2810,7 @@ export class Game {
     const psc = mech ? PX * 1.4 : PX;
     this.player.scale.set(psc * this.face, psc);
     this.player.position.set(Math.round(this.px), Math.round(this.py));
+    this.player.zIndex = Math.round(this.py + 7 * PX) * 2 + 1;
     const blink = this.dashT <= 0 && !mech && this.iframes > 0 && ((t * 20) | 0) & 1;
     this.player.visible = !this.over && !blink;
     this.player.tint = this.rage > 0 ? 0xffb0b0 : 0xffffff;

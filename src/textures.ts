@@ -2,9 +2,10 @@ import { CanvasSource, Texture } from 'pixi.js';
 import { BODY, PROP } from './art';
 import type { EnemyDef, GroundStyle } from './levels';
 
-// Арт задаётся пиксельными картами, но рисуется в HD: карта дважды сглаживается Scale2x (×4),
-// затем получает объём, цветной контур и мягкую тень. Текстура отдаётся с resolution = кратности,
-// поэтому в игре её размер в «точках» тот же, что у исходной карты, — масштабы спрайтов не меняются.
+// «Пререндеренный» пиксель-арт: карта дважды детальнее (Scale2x), по силуэту строится карта высот,
+// из неё нормали и свет сверху-слева, затем свет квантуется в 5 тонов палитры с холодными тенями,
+// тёплыми бликами и дизерингом. Пиксели остаются чёткими (nearest), формы — объёмными.
+// Текстура отдаётся с resolution = кратности, поэтому 1 тексель = 1 единица мира, масштабы спрайтов прежние.
 type Pal = Record<string, string>;
 type RGB = [number, number, number];
 
@@ -23,11 +24,12 @@ function canvas(w: number, h: number) {
   c.width = w;
   c.height = h;
   const g = c.getContext('2d')!;
+  g.imageSmoothingEnabled = false;
   return { c, g };
 }
 
-function toTex(c: HTMLCanvasElement, resolution = 1) {
-  return new Texture({ source: new CanvasSource({ resource: c, resolution, scaleMode: 'linear' }) });
+function toTex(c: HTMLCanvasElement, resolution = 1, nearest = true) {
+  return new Texture({ source: new CanvasSource({ resource: c, resolution, scaleMode: nearest ? 'nearest' : 'linear' }) });
 }
 
 function rng(seed: number) {
@@ -46,13 +48,55 @@ function rgb(c: string): RGB {
 const clamp = (v: number) => Math.max(0, Math.min(255, Math.round(v)));
 const mul = (c: RGB, f: number): RGB => [clamp(c[0] * f), clamp(c[1] * f), clamp(c[2] * f)];
 const mix = (a: RGB, b: RGB, t: number): RGB => [clamp(a[0] + (b[0] - a[0]) * t), clamp(a[1] + (b[1] - a[1]) * t), clamp(a[2] + (b[2] - a[2]) * t)];
-const css = (c: RGB, a = 1) => `rgba(${c[0]},${c[1]},${c[2]},${a})`;
 
 export function shade(c: string, f: number) {
-  return css(mul(rgb(c), f));
+  const v = mul(rgb(c), f);
+  return `rgb(${v[0]},${v[1]},${v[2]})`;
 }
 
 export const hexNum = (c: string) => parseInt(c.replace('#', ''), 16);
+
+// ---------- общие части освещения ----------
+
+const COOL: RGB = [42, 26, 74];
+const WARM: RGB = [255, 242, 192];
+const INK: RGB = [10, 6, 16];
+const BAYER = [0, 8, 2, 10, 12, 4, 14, 6, 3, 11, 1, 9, 15, 7, 13, 5];
+const LIGHT = (() => {
+  const l = [-0.5, -0.72, 0.85];
+  const n = Math.hypot(l[0], l[1], l[2]);
+  return [l[0] / n, l[1] / n, l[2] / n];
+})();
+
+// 5 тонов: тени уходят в холодный фиолетовый, блики — в тёплый
+function ramp(base: RGB): RGB[] {
+  return [mix(mul(base, 0.42), COOL, 0.35), mix(mul(base, 0.66), COOL, 0.18), base, mix(mul(base, 1.18), WARM, 0.12), mix(mul(base, 1.38), WARM, 0.32)];
+}
+
+const tone = (v: number) => (v < 0.55 ? 0 : v < 0.78 ? 1 : v < 0.98 ? 2 : v < 1.12 ? 3 : 4);
+
+// чамфер-расстояние до ближайшей «внешней» клетки
+function chamfer(W: number, H: number, inside: (i: number) => boolean) {
+  const d = new Float32Array(W * H);
+  for (let i = 0; i < W * H; i++) d[i] = inside(i) ? 1e9 : 0;
+  const D = Math.SQRT2;
+  const get = (x: number, y: number) => (x < 0 || y < 0 || x >= W || y >= H ? 0 : d[y * W + x]);
+  for (let y = 0; y < H; y++) {
+    for (let x = 0; x < W; x++) {
+      const i = y * W + x;
+      if (d[i] === 0) continue;
+      d[i] = Math.min(d[i], get(x - 1, y) + 1, get(x, y - 1) + 1, get(x - 1, y - 1) + D, get(x + 1, y - 1) + D);
+    }
+  }
+  for (let y = H - 1; y >= 0; y--) {
+    for (let x = W - 1; x >= 0; x--) {
+      const i = y * W + x;
+      if (d[i] === 0) continue;
+      d[i] = Math.min(d[i], get(x + 1, y) + 1, get(x, y + 1) + 1, get(x + 1, y + 1) + D, get(x - 1, y + 1) + D);
+    }
+  }
+  return d;
+}
 
 // ---------- Scale2x (EPX) по символам карты ----------
 
@@ -84,94 +128,139 @@ function upscale(rows: readonly string[], times: number) {
   return g;
 }
 
-interface HdOpts {
-  glow?: string; // символы-светлячки: без затенения
-  times?: number; // 2 → ×4, 3 → ×8
+interface ShadeOpts {
+  times?: number; // 1 → ×2, 3 → ×8 (боссы)
+  glow?: string; // светящиеся символы: без затенения
+  metal?: string; // символы с металлическим бликом
   shadow?: boolean;
-  white?: boolean; // белый силуэт для вспышки попадания
-  flat?: boolean; // без объёма (снаряды, эффекты)
+  white?: boolean; // белый силуэт для вспышки
+  flat?: boolean; // без объёма (снаряды)
 }
 
-function hdCanvas(rows: readonly string[], pal: Pal, o: HdOpts = {}) {
-  const times = o.times ?? 2;
+function shade3d(rows: readonly string[], pal: Pal, o: ShadeOpts = {}) {
+  const times = o.times ?? 1;
   const S = 1 << times;
   const glow = o.glow ?? 'er';
+  const metal = o.metal ?? 'mw';
   const G = upscale(rows, times);
   const H = G.length;
   const W = G[0].length;
-  const op = (x: number, y: number) => x >= 0 && y >= 0 && x < W && y < H && G[y][x] !== '.';
-  const colors: Record<string, RGB> = {};
-  for (const k in pal) colors[k] = rgb(pal[k]);
-  const ink: RGB = [8, 5, 14];
-  const sun: RGB = [255, 250, 235];
-  const off = Math.max(1, S >> 1);
+  const N = W * H;
+  const ch = new Array<string>(N);
+  for (let y = 0; y < H; y++) for (let x = 0; x < W; x++) ch[y * W + x] = G[y][x];
+  const op = (x: number, y: number) => x >= 0 && y >= 0 && x < W && y < H && ch[y * W + x] !== '.';
 
-  const { c: body, g: bg } = canvas(W, H);
-  const img = bg.createImageData(W, H);
+  const ds = chamfer(W, H, (i) => ch[i] !== '.');
+  const dr = chamfer(W, H, (i) => {
+    const c = ch[i];
+    if (c === '.' || c === 'k') return false;
+    const x = i % W;
+    const y = (i / W) | 0;
+    for (const [a, b] of [[1, 0], [-1, 0], [0, 1], [0, -1]]) {
+      if (op(x + a, y + b) && ch[(y + b) * W + x + a] !== c) return false;
+    }
+    return true;
+  });
+  const Rs = 3.5 * S;
+  const Rr = 1.6 * S;
+  const circ = (t: number) => Math.sqrt(1 - (1 - t) * (1 - t));
+  const hm = new Float32Array(N);
+  for (let i = 0; i < N; i++) {
+    if (ch[i] === '.') continue;
+    hm[i] = 0.62 * circ(Math.min(1, ds[i] / Rs)) + 0.38 * circ(Math.min(1, dr[i] / Rr));
+  }
+  const h = (x: number, y: number) => (op(x, y) ? hm[y * W + x] : 0);
+
+  const ramps: Record<string, RGB[]> = {};
+  const bases: Record<string, RGB> = {};
+  for (const k in pal) {
+    bases[k] = rgb(pal[k]);
+    ramps[k] = ramp(bases[k]);
+  }
+
+  const { c, g } = canvas(W, H);
+  const img = g.createImageData(W, H);
   const d = img.data;
+  const put = (i: number, col: RGB, a = 255) => {
+    d[i * 4] = col[0];
+    d[i * 4 + 1] = col[1];
+    d[i * 4 + 2] = col[2];
+    d[i * 4 + 3] = a;
+  };
+
+  // пиксельная тень с дизерингом по краю
+  if (o.shadow && !o.white) {
+    const cx = W / 2 - 0.5;
+    const cy = H - S * 1.1;
+    const rx = W * 0.32;
+    const ry = S * 1.05;
+    for (let y = 0; y < H; y++) {
+      for (let x = 0; x < W; x++) {
+        const e = ((x - cx) / rx) ** 2 + ((y - cy) / ry) ** 2;
+        if (e < 0.55) put(y * W + x, INK, 120);
+        else if (e < 1 && (x + y) % 2 === 0) put(y * W + x, INK, 80);
+      }
+    }
+  }
+
+  const K = 7;
   for (let y = 0; y < H; y++) {
-    const row = G[y];
     for (let x = 0; x < W; x++) {
-      const ch = row[x];
-      if (ch === '.') continue;
-      const base = colors[ch];
+      const i = y * W + x;
+      const k = ch[i];
+      if (k === '.') continue;
+      const base = bases[k];
       if (!base) continue;
-      let c: RGB;
-      if (o.white) c = [255, 255, 255];
-      else if (ch === 'k') {
-        // цветной контур: затемнённый цвет ближайшей заливки вместо чистого чёрного
-        let near: RGB | null = null;
-        for (let r = 1; r <= S && !near; r++) {
-          for (const [dx, dy] of [[0, -r], [r, 0], [0, r], [-r, 0]]) {
-            const xx = x + dx;
-            const yy = y + dy;
-            if (op(xx, yy) && G[yy][xx] !== 'k' && colors[G[yy][xx]]) {
-              near = colors[G[yy][xx]];
+      if (o.white) {
+        put(i, [255, 255, 255]);
+        continue;
+      }
+      if (k === 'k') {
+        // контур: снаружи тёмный (на освещённой стороне чуть цветной), внутри — тёмный тон соседа
+        let near = '';
+        for (let r = 1; r <= S + 1 && !near; r++) {
+          for (const [a, b] of [[0, -r], [r, 0], [0, r], [-r, 0]]) {
+            if (op(x + a, y + b) && ch[(y + b) * W + x + a] !== 'k' && ramps[ch[(y + b) * W + x + a]]) {
+              near = ch[(y + b) * W + x + a];
               break;
             }
           }
         }
-        c = near ? mix(mul(near, 0.32), ink, 0.35) : base;
-      } else if (o.flat || glow.includes(ch)) c = base;
-      else {
-        c = mul(base, 1.14 - 0.32 * (y / H));
-        if (!op(x - off, y - off)) c = mix(c, sun, 0.28);
-        else if (!op(x + off, y + off)) c = mul(c, 0.72);
+        const outer = !op(x + 1, y) || !op(x - 1, y) || !op(x, y + 1) || !op(x, y - 1);
+        if (outer) {
+          const lit = !op(x - 1, y) || !op(x, y - 1);
+          put(i, near && lit ? mix(INK, ramps[near][0], 0.45) : INK);
+        } else put(i, near ? mul(ramps[near][0], 0.8) : INK);
+        continue;
       }
-      const i = (y * W + x) * 4;
-      d[i] = c[0];
-      d[i + 1] = c[1];
-      d[i + 2] = c[2];
-      d[i + 3] = 255;
+      if (o.flat || glow.includes(k)) {
+        put(i, base);
+        continue;
+      }
+      let nx = (-(h(x + 1, y) - h(x - 1, y)) * K) / 2;
+      let ny = (-(h(x, y + 1) - h(x, y - 1)) * K) / 2;
+      let nz = 1;
+      const nl = Math.hypot(nx, ny, nz);
+      nx /= nl;
+      ny /= nl;
+      nz /= nl;
+      const diff = Math.max(0, nx * LIGHT[0] + ny * LIGHT[1] + nz * LIGHT[2]);
+      let v = 0.46 + 0.8 * diff - 0.12 * (y / H);
+      if (metal.includes(k)) v += 0.55 * Math.pow(Math.max(0, 2 * diff * nz - LIGHT[2]), 10);
+      v += (BAYER[(y % 4) * 4 + (x % 4)] / 16 - 0.5) * 0.09;
+      put(i, ramps[k][tone(v)]);
     }
   }
-  bg.putImageData(img, 0, 0);
-
-  const { c, g } = canvas(W, H);
-  if (o.shadow && !o.white) {
-    const rx = W * 0.3;
-    const ry = S * 1.2;
-    g.save();
-    g.translate(W / 2, H - S * 1.2);
-    g.scale(1, ry / rx);
-    const grad = g.createRadialGradient(0, 0, 0, 0, 0, rx);
-    grad.addColorStop(0, 'rgba(0,0,0,0.55)');
-    grad.addColorStop(0.6, 'rgba(0,0,0,0.3)');
-    grad.addColorStop(1, 'rgba(0,0,0,0)');
-    g.fillStyle = grad;
-    g.fillRect(-rx, -rx, rx * 2, rx * 2);
-    g.restore();
-  }
-  g.drawImage(body, 0, 0);
+  g.putImageData(img, 0, 0);
   return { c, S, G };
 }
 
-function hdTex(rows: readonly string[], pal: Pal, o: HdOpts = {}) {
-  const { c, S } = hdCanvas(rows, pal, o);
+function tex3d(rows: readonly string[], pal: Pal, o: ShadeOpts = {}) {
+  const { c, S } = shade3d(rows, pal, o);
   return toTex(c, S);
 }
 
-// маска контурного света для 8 направлений, считается по HD-сетке
+// маска контурного света по детальной сетке (1 тексель шириной)
 function rimMask(G: readonly string[], S: number, dx: number, dy: number) {
   const H = G.length;
   const W = G[0].length;
@@ -179,7 +268,7 @@ function rimMask(G: readonly string[], S: number, dx: number, dy: number) {
   const { c, g } = canvas(W, H);
   const img = g.createImageData(W, H);
   const d = img.data;
-  const a = Math.max(1, Math.round(S * 0.75));
+  const a = Math.max(1, S >> 1);
   const b = a * 2;
   for (let y = 0; y < H; y++) {
     for (let x = 0; x < W; x++) {
@@ -221,13 +310,15 @@ const MAGE_TOP = [
 ];
 const MAGE_A = [...MAGE_TOP, '...kcCCmmCCck...', '..kccCCCCCCcck..', '..kkkkkkkkkkkk..', '................'];
 const MAGE_B = [...MAGE_TOP, '..kccCCmmCCcck..', '...kcCCCCCCck...', '...kkkkkkkkkk...', '................'];
-const magePal = (p: MagePal): Pal => ({ k: '#0a0818', w: '#e9fdff', ...p });
+const magePal = (p: MagePal): Pal => ({ k: '#0a0818', w: '#e9fdff', ...p, C: p.C });
 
 export const mageFrames = (p: MagePal) =>
-  memo(`mage:${p.C}:${p.t}`, () => [hdTex(MAGE_A, magePal(p), { glow: 'tw', shadow: true }), hdTex(MAGE_B, magePal(p), { glow: 'tw', shadow: true })]);
+  memo(`mage:${p.C}:${p.t}`, () => [
+    tex3d(MAGE_A, magePal(p), { glow: 'tw', metal: '', shadow: true }),
+    tex3d(MAGE_B, magePal(p), { glow: 'tw', metal: '', shadow: true }),
+  ]);
 
-export const mageGhost = () =>
-  memo('mageGhost', () => hdTex(MAGE_A, magePal({ c: '#000', C: '#000', t: '#000', m: '#000' }), { white: true }));
+export const mageGhost = () => memo('mageGhost', () => tex3d(MAGE_A, magePal({ c: '#000', C: '#000', t: '#000', m: '#000' }), { white: true }));
 
 // ---------- мех-костюм ----------
 
@@ -247,17 +338,18 @@ const MECH_TOP = [
 ];
 export const mechFrames = () =>
   memo('mech', () => [
-    hdTex([...MECH_TOP, '...kMMk..kMMk...', '...kmmk..kmmk...', '..kkkkk..kkkkk..', '................', '................'], MECH_PAL, { glow: 'ty', shadow: true }),
-    hdTex([...MECH_TOP, '..kMMk....kMMk..', '..kmmk....kmmk..', '.kkkkk....kkkkk.', '................', '................'], MECH_PAL, { glow: 'ty', shadow: true }),
+    tex3d([...MECH_TOP, '...kMMk..kMMk...', '...kmmk..kmmk...', '..kkkkk..kkkkk..', '................', '................'], MECH_PAL, { glow: 'ty', metal: 'mMw', shadow: true }),
+    tex3d([...MECH_TOP, '..kMMk....kMMk..', '..kmmk....kmmk..', '.kkkkk....kkkkk.', '................', '................'], MECH_PAL, { glow: 'ty', metal: 'mMw', shadow: true }),
   ]);
 
 // ---------- враги ----------
 
 function enemyPal(p: EnemyDef['pal']): Pal {
-  return { k: '#0c0610', a: shade(p[0], 0.7), A: p[0], b: shade(p[1], 0.6), B: p[1], e: p[2], r: p[3], w: '#d8d0c0', m: '#7a7a8e' };
+  return { k: '#0c0610', a: shade(p[0], 0.72), A: p[0], b: shade(p[1], 0.62), B: p[1], e: p[2], r: p[3], w: '#d8d0c0', m: '#8a8aa0' };
 }
 
-const bodyTimes = (d: EnemyDef) => ((d.size ?? 1) >= 3 ? 3 : 2);
+// у боссов детальнее сетка, чтобы тексель остался около 1 единицы мира
+const bodyTimes = (d: EnemyDef) => ((d.size ?? 1) >= 3 ? 3 : 1);
 
 // [кадр A, кадр B, белая вспышка]
 export const enemyFrames = (d: EnemyDef) =>
@@ -265,13 +357,13 @@ export const enemyFrames = (d: EnemyDef) =>
     const body = BODY[d.body];
     const pal = enemyPal(d.pal);
     const t = bodyTimes(d);
-    return [hdTex(body.a, pal, { times: t, shadow: true }), hdTex(body.b, pal, { times: t, shadow: true }), hdTex(body.a, pal, { times: t, white: true })];
+    return [tex3d(body.a, pal, { times: t, shadow: true }), tex3d(body.b, pal, { times: t, shadow: true }), tex3d(body.a, pal, { times: t, white: true })];
   });
 
 export const minionFrames = () =>
   memo('minion', () => {
     const pal = enemyPal(['#2a8a5a', '#1a3a3a', '#7dff6a', '#7dff6a']);
-    return [hdTex(BODY.humanoid.a, pal, { shadow: true }), hdTex(BODY.humanoid.b, pal, { shadow: true })];
+    return [tex3d(BODY.humanoid.a, pal, { shadow: true }), tex3d(BODY.humanoid.b, pal, { shadow: true })];
   });
 
 // [кадр][направление]
@@ -286,159 +378,168 @@ export const rimMasks = (d: EnemyDef) =>
 
 // ---------- декорации ----------
 
+// плоские лежат на полу, высокие сортируются по глубине вместе с персонажами
+export const FLAT_PROPS = new Set(['crack', 'rune', 'bones', 'candles']);
+
 export const propTex = (kind: string, pal: Pal) =>
   memo(`prop:${kind}:${pal.a}:${pal.e}`, () => {
-    const flatGlow = kind === 'crack' || kind === 'rune';
-    return hdTex(PROP[kind], pal, { shadow: !flatGlow, flat: flatGlow });
+    const decal = kind === 'crack' || kind === 'rune';
+    return tex3d(PROP[kind], pal, { shadow: !decal, flat: decal, metal: 'mw' });
   });
 
-// ---------- живописный пол локаций ----------
+// ---------- объёмный пиксельный пол ----------
 
-export const GROUND_SIZE = 192;
+export const GROUND_SIZE = 96;
 
 export const groundTile = (src: GroundStyle, f = 1) =>
   memo(`ground:${src.pattern}:${src.base}:${f}`, () => {
     const S = GROUND_SIZE;
+    const N = S * S;
+    const pat = src.pattern;
     const base = mul(rgb(src.base), f);
-    const dark = mul(rgb(src.dark), f);
-    const light = mul(rgb(src.light), f);
-    const line = mul(rgb(src.line), f);
-    const glow = rgb(src.glow);
-    const { c, g } = canvas(S, S);
-    const r = rng(src.base.charCodeAt(2) * 131 + src.pattern.length * 7);
-    g.fillStyle = css(base);
-    g.fillRect(0, 0, S, S);
-
-    // всё рисуем с переносом через край — плитка бесшовная
-    const wrap = (draw: (ox: number, oy: number) => void) => {
-      for (const ox of [-S, 0, S]) for (const oy of [-S, 0, S]) draw(ox, oy);
+    const glowc = rgb(src.glow);
+    const r = rng(pat.length * 31 + 7);
+    const noise = new Float32Array(N);
+    for (let i = 0; i < N; i++) noise[i] = r();
+    const at = (x: number, y: number) => (((y % S) + S) % S) * S + (((x % S) + S) % S);
+    const sm = (x: number, y: number) => {
+      let s = 0;
+      for (let a = -1; a <= 1; a++) for (let b = -1; b <= 1; b++) s += noise[at(x + a, y + b)];
+      return s / 9;
     };
-    const blob = (x: number, y: number, rad: number, col: RGB, a: number) =>
-      wrap((ox, oy) => {
-        const gr = g.createRadialGradient(x + ox, y + oy, 0, x + ox, y + oy, rad);
-        gr.addColorStop(0, css(col, a));
-        gr.addColorStop(1, css(col, 0));
-        g.fillStyle = gr;
-        g.fillRect(x + ox - rad, y + oy - rad, rad * 2, rad * 2);
-      });
-    const path = (pts: number[], width: number, col: RGB, a: number, glowCol?: RGB) =>
-      wrap((ox, oy) => {
-        g.beginPath();
-        g.moveTo(pts[0] + ox, pts[1] + oy);
-        for (let i = 2; i < pts.length; i += 2) g.lineTo(pts[i] + ox, pts[i + 1] + oy);
-        g.lineWidth = width;
-        g.lineCap = 'round';
-        g.lineJoin = 'round';
-        g.strokeStyle = css(col, a);
-        if (glowCol) {
-          g.shadowColor = css(glowCol, 0.9);
-          g.shadowBlur = 8;
-        }
-        g.stroke();
-        g.shadowBlur = 0;
-      });
-    const walk = (len: number, step: number) => {
-      const pts = [r() * S, r() * S];
-      let a = r() * Math.PI * 2;
-      for (let k = 0; k < len; k++) {
-        a += (r() - 0.5) * 1.2;
-        pts.push(pts[pts.length - 2] + Math.cos(a) * step, pts[pts.length - 1] + Math.sin(a) * step);
-      }
-      return pts;
-    };
+    const Hm = new Float32Array(N);
+    const mat = new Uint8Array(N); // 0 камень, 1 щель, 2 свечение
+    const tint = new Float32Array(N).fill(1);
 
-    for (let i = 0; i < 70; i++) blob(r() * S, r() * S, 10 + r() * 34, r() < 0.5 ? light : dark, 0.35 + r() * 0.3);
-
-    switch (src.pattern) {
-      case 'slab': {
-        const seam = (pts: number[]) => {
-          path(pts, 3, dark, 0.9);
-          path(pts.map((v, i) => v + (i % 2 ? 1.5 : 1.5)), 1.2, light, 0.6);
-        };
-        seam([0, 0, S, 0]);
-        seam([0, 96, S, 96]);
-        seam([0, 0, 0, 96]);
-        seam([110, 0, 110, 96]);
-        seam([50, 96, 50, S]);
-        seam([150, 96, 150, S]);
-        for (let i = 0; i < 6; i++) path(walk(6, 7), 1.4, dark, 0.8);
-        for (let i = 0; i < 10; i++) blob(r() * S, r() * S, 6 + r() * 10, mul([62, 84, 64], f), 0.35);
-        path(walk(4, 6), 1.2, glow, 0.8, glow);
-        break;
-      }
-      case 'basalt': {
-        for (let i = 0; i < 8; i++) path(walk(8, 9), 2, line, 0.9);
-        for (let i = 0; i < 3; i++) {
-          const pts = walk(10, 9);
-          path(pts, 2.4, mul([122, 42, 16], f), 0.9, glow);
-          path(pts, 0.9, [255, 220, 120], 0.9);
+    if (pat === 'slab' || pat === 'cathedral') {
+      for (let y = 0; y < S; y++) {
+        for (let x = 0; x < S; x++) {
+          const i = y * S + x;
+          let e: number;
+          if (pat === 'cathedral') {
+            const cx = x % 32;
+            const cy = y % 32;
+            e = Math.min(cx, cy, 31 - cx, 31 - cy);
+            tint[i] = ((x >> 5) + (y >> 5)) % 2 ? 1.06 : 0.9;
+          } else {
+            const row = (y / 48) | 0;
+            const off = row === 0 ? 0 : 24;
+            const w = row === 0 ? 48 : 32;
+            const cx = (x + off) % w;
+            const cy = y % 48;
+            e = Math.min(cx, cy, w - 1 - cx, 47 - cy);
+            tint[i] = 0.94 + (0.12 * ((((((x + off) / w) | 0) * 7 + row * 3) % 3) / 2));
+          }
+          if (e < 1.5) mat[i] = 1;
+          else Hm[i] = Math.min(1, (e - 1) / 3);
         }
-        break;
       }
-      case 'ice': {
-        for (let i = 0; i < 8; i++) {
-          const x = r() * S;
-          path([x, 0, x + S * 0.5, S], 8, light, 0.25);
-        }
-        for (let i = 0; i < 6; i++) path(walk(7, 8), 1.2, [220, 245, 255], 0.45);
-        for (let i = 0; i < 14; i++) blob(r() * S, r() * S, 2 + r() * 2, [240, 252, 255], 0.9);
-        break;
-      }
-      case 'flesh': {
-        for (let i = 0; i < 12; i++) {
-          const x = r() * S;
-          const y = r() * S;
-          const rad = 10 + r() * 16;
-          blob(x, y, rad, dark, 0.6);
-          wrap((ox, oy) => {
-            g.beginPath();
-            g.ellipse(x + ox, y + oy, rad, rad * (0.7 + r() * 0.3), r() * 3, 0, Math.PI * 2);
-            g.lineWidth = 2;
-            g.strokeStyle = css(line, 0.7);
-            g.stroke();
-          });
-        }
-        for (let i = 0; i < 3; i++) {
-          const pts = walk(10, 8);
-          path(pts, 2.2, mul([78, 98, 36], f), 0.8, glow);
-        }
-        break;
-      }
-      case 'cathedral': {
-        for (let ty = 0; ty < 3; ty++) {
-          for (let tx = 0; tx < 3; tx++) {
-            const x = tx * 64;
-            const y = ty * 64;
-            const gr = g.createLinearGradient(x, y, x + 64, y + 64);
-            const cc = (tx + ty) % 2 ? dark : light;
-            gr.addColorStop(0, css(mix(cc, [255, 255, 255], 0.06), 0.8));
-            gr.addColorStop(1, css(mul(cc, 0.85), 0.8));
-            g.fillStyle = gr;
-            g.fillRect(x + 2, y + 2, 60, 60);
+    } else {
+      const n = pat === 'basalt' ? 12 : pat === 'ice' ? 9 : 16;
+      const pr = rng(7 + pat.length);
+      const pts: number[] = [];
+      for (let k = 0; k < n; k++) pts.push(pr() * S, pr() * S);
+      for (let y = 0; y < S; y++) {
+        for (let x = 0; x < S; x++) {
+          let d1 = 1e9;
+          let d2 = 1e9;
+          let bi = 0;
+          for (let k = 0; k < n; k++) {
+            let dx = Math.abs(x - pts[k * 2]);
+            let dy = Math.abs(y - pts[k * 2 + 1]);
+            dx = Math.min(dx, S - dx);
+            dy = Math.min(dy, S - dy);
+            const dd = Math.hypot(dx, dy);
+            if (dd < d1) {
+              d2 = d1;
+              d1 = dd;
+              bi = k;
+            } else if (dd < d2) d2 = dd;
+          }
+          const i = y * S + x;
+          const e = (d2 - d1) / 2;
+          tint[i] = 0.92 + (0.16 * ((bi * 37) % 5)) / 4;
+          if (e < 1.2) {
+            mat[i] = (pat === 'basalt' && bi % 3 === 0) || (pat === 'flesh' && e < 0.55 && bi % 4 === 0) ? 2 : 1;
+          } else {
+            const t = Math.min(1, (e - 1.2) / (pat === 'flesh' ? 5 : 3));
+            Hm[i] = pat === 'flesh' ? Math.sqrt(1 - (1 - t) * (1 - t)) : t;
           }
         }
-        for (let k = 0; k <= S; k += 64) {
-          path([k, 0, k, S], 3, mul(line, 0.7), 1);
-          path([0, k, S, k], 3, mul(line, 0.7), 1);
-        }
-        for (let i = 0; i < 4; i++) path(walk(5, 7), 1.2, dark, 0.8);
-        wrap((ox, oy) => {
-          g.beginPath();
-          g.arc(96 + ox, 96 + oy, 9, 0, Math.PI * 2);
-          g.lineWidth = 1.6;
-          g.strokeStyle = css(glow, 0.8);
-          g.shadowColor = css(glow, 1);
-          g.shadowBlur = 10;
-          g.stroke();
-          g.shadowBlur = 0;
-        });
-        break;
       }
     }
-    for (let i = 0; i < 260; i++) {
-      g.fillStyle = css(r() < 0.5 ? mul(light, 1.15) : mul(dark, 0.85), 0.6);
-      g.fillRect(r() * S, r() * S, 1 + r(), 1 + r());
+    for (let y = 0; y < S; y++) for (let x = 0; x < S; x++) if (mat[y * S + x] === 0) Hm[y * S + x] = Hm[y * S + x] * 0.85 + sm(x, y) * 0.15;
+
+    const rm = ramp(base);
+    const gap = mix(mul(base, 0.35), COOL, 0.4);
+    const { c, g } = canvas(S, S);
+    const img = g.createImageData(S, S);
+    const d = img.data;
+    const put = (i: number, col: RGB) => {
+      d[i * 4] = col[0];
+      d[i * 4 + 1] = col[1];
+      d[i * 4 + 2] = col[2];
+      d[i * 4 + 3] = 255;
+    };
+    const K = 5;
+    for (let y = 0; y < S; y++) {
+      for (let x = 0; x < S; x++) {
+        const i = y * S + x;
+        if (mat[i] === 2) {
+          put(i, noise[i] > 0.4 ? mix(glowc, [255, 240, 200], 0.3 * noise[i]) : mul(glowc, 0.75));
+          continue;
+        }
+        if (mat[i] === 1) {
+          put(i, gap);
+          continue;
+        }
+        let nx = (-(Hm[at(x + 1, y)] - Hm[at(x - 1, y)]) * K) / 2;
+        let ny = (-(Hm[at(x, y + 1)] - Hm[at(x, y - 1)]) * K) / 2;
+        let nz = 1;
+        const nl = Math.hypot(nx, ny, nz);
+        nx /= nl;
+        ny /= nl;
+        nz /= nl;
+        const diff = Math.max(0, nx * LIGHT[0] + ny * LIGHT[1] + nz * LIGHT[2]);
+        let v = (0.47 + 0.72 * diff) * tint[i];
+        const spec = Math.pow(Math.max(0, 2 * diff * nz - LIGHT[2]), 8);
+        if (pat === 'ice') v += 0.25 * spec;
+        if (pat === 'flesh') v += 0.2 * spec;
+        v += (BAYER[(y % 4) * 4 + (x % 4)] / 16 - 0.5) * 0.1;
+        put(i, rm[tone(v)]);
+      }
     }
+    // трещины с глубиной: тёмная линия и светлая кромка под ней
+    for (let k = 0; k < 5; k++) {
+      let x = (r() * S) | 0;
+      let y = (r() * S) | 0;
+      let a = r() * Math.PI * 2;
+      for (let s = 0; s < 14; s++) {
+        a += (r() - 0.5) * 1.2;
+        x = (x + Math.round(Math.cos(a)) + S) % S;
+        y = (y + Math.round(Math.sin(a)) + S) % S;
+        if (mat[y * S + x] === 0) {
+          put(y * S + x, gap);
+          put(at(x, y + 1), rm[3]);
+        }
+      }
+    }
+    if (pat === 'cathedral') {
+      for (const [cx, cy] of [[16, 16], [80, 48], [48, 80]]) {
+        for (let a = 0; a < 24; a++) {
+          const t = (a / 24) * Math.PI * 2;
+          put(at(cx + Math.round(Math.cos(t) * 5), cy + Math.round(Math.sin(t) * 5)), glowc);
+        }
+      }
+    }
+    if (pat === 'slab') {
+      const moss = mix(rgb('#3e5440'), base, 0.3);
+      for (let k = 0; k < 30; k++) {
+        const i = ((r() * S) | 0) * S + ((r() * S) | 0);
+        if (mat[i] === 0) put(i, moss);
+      }
+    }
+    g.putImageData(img, 0, 0);
     return toTex(c);
   });
 
@@ -461,27 +562,27 @@ export const fogTex = () =>
         }
       }
     }
-    return toTex(c);
+    return toTex(c, 1, false);
   });
 
 // ---------- предметы на карте ----------
 
 export const healOrbTex = () =>
-  memo('heal', () => hdTex(['.kkkkk.', 'kRRRRwk', 'kRrrRRk', 'kRrrrRk', 'kRRrRRk', 'kRRRRRk', '.kkkkk.'], { k: '#2a0610', R: '#ff2d55', r: '#a80a2a', w: '#ffd8e0' }, { glow: 'w' }));
+  memo('heal', () => tex3d(['.kkkkk.', 'kRRRRwk', 'kRrrRRk', 'kRrrrRk', 'kRRrRRk', 'kRRRRRk', '.kkkkk.'], { k: '#2a0610', R: '#ff2d55', r: '#c81a3a', w: '#ffd8e0' }, { glow: 'w', metal: 'R' }));
 
 export const shardPickTex = () =>
-  memo('shardPick', () => hdTex(['..k..', '.kVk.', 'kVwVk', 'kVVvk', '.kvk.', '..k..'], { k: '#2a0a3a', V: '#c46bff', v: '#7a2ab0', w: '#ffffff' }, { glow: 'Vvw' }));
+  memo('shardPick', () => tex3d(['..k..', '.kVk.', 'kVwVk', 'kVVvk', '.kvk.', '..k..'], { k: '#2a0a3a', V: '#c46bff', v: '#8a3ad0', w: '#ffffff' }, { glow: 'w', metal: 'Vv' }));
 
 const CHEST_ROWS = ['..kkkkkkkk..', '.kbBBBBBBbk.', 'kbBBBBBBBBbk', 'kyyyyyyyyyyk', 'kbbbbkkbbbbk', 'kbBBbkykbBbk', 'kbBBbkkkbBbk', 'kbBBBBBBBBbk', 'kbbbbbbbbbbk', 'kkkkkkkkkkkk', '............'];
 
 export const chestTex = (legendary = false) =>
   memo(`chest:${legendary}`, () =>
-    hdTex(CHEST_ROWS, legendary ? { k: '#140804', b: '#7a3a0a', B: '#c8641a', y: '#ffd24a' } : { k: '#140a04', b: '#5a3a1a', B: '#8a5a2a', y: '#ffc94a' }, { glow: 'y', shadow: true }),
+    tex3d(CHEST_ROWS, legendary ? { k: '#140804', b: '#7a3a0a', B: '#c8641a', y: '#ffd24a' } : { k: '#140a04', b: '#5a3a1a', B: '#8a5a2a', y: '#ffc94a' }, { glow: '', metal: 'y', shadow: true }),
   );
 
 export const shrineTex = () =>
   memo('shrine', () =>
-    hdTex(
+    tex3d(
       ['....k....', '...kek...', '...kek...', '..kaeak..', '..kaAak..', '..kaAak..', '..kaeak..', '..kaAak..', '..kaAak..', '.kaaAaak.', '.kaAAAak.', 'kaaaaaaak', 'kbbbbbbbk', 'kkkkkkkkk', '.........'],
       { k: '#08050c', a: '#3a3450', A: '#5a5078', e: '#ffc94a', b: '#2a2438' },
       { glow: 'e', shadow: true },
@@ -490,48 +591,49 @@ export const shrineTex = () =>
 
 export const fountainTex = () =>
   memo('fountain', () =>
-    hdTex(
+    tex3d(
       ['.....kk.....', '....kwwk....', '.....kk.....', '....kmmk....', '..kkkmmkkk..', '.kmeeeeeemk.', 'kmeewweeeemk', 'kmeeeeeweemk', '.kmmmmmmmmk.', '..kkkkkkkk..', '............'],
       { k: '#08050c', m: '#5a5a70', e: '#ff2d55', w: '#ffd8e0' },
-      { glow: 'ew', shadow: true },
+      { glow: 'ew', metal: 'm', shadow: true },
     ),
   );
 
-// ---------- снаряды ----------
+// ---------- снаряды: чёткие, без объёма ----------
 
-const flat = { flat: true, glow: '' };
+const flat: ShadeOpts = { flat: true, glow: '' };
 
-export const boltTex = () => memo('bolt', () => hdTex(['.ttt.', 'twwwt', 'twWwt', 'twwwt', '.ttt.'], { t: '#3ef0ff', w: '#b8fbff', W: '#ffffff' }, flat));
+export const boltTex = () => memo('bolt', () => tex3d(['.ttt.', 'twwwt', 'twWwt', 'twwwt', '.ttt.'], { t: '#3ef0ff', w: '#b8fbff', W: '#ffffff' }, flat));
 
-export const orbTex = () => memo('orb', () => hdTex(['.ggg.', 'gwwwg', 'gwWwg', 'gwwwg', '.ggg.'], { g: '#a0a0a0', w: '#e0e0e0', W: '#ffffff' }, flat));
+export const orbTex = () => memo('orb', () => tex3d(['.ggg.', 'gwwwg', 'gwWwg', 'gwwwg', '.ggg.'], { g: '#a0a0a0', w: '#e0e0e0', W: '#ffffff' }, flat));
 
-export const shardTex = () => memo('shard', () => hdTex(['kww...', 'kWWWww', 'kww...'], { k: '#4a7aa8', w: '#9ad8ff', W: '#ffffff' }, flat));
+export const shardTex = () => memo('shard', () => tex3d(['kww...', 'kWWWww', 'kww...'], { k: '#4a7aa8', w: '#9ad8ff', W: '#ffffff' }, flat));
 
 export const chakramTex = () =>
-  memo('chakram', () => hdTex(['..www..', '.wkkkw.', 'wkW.Wkw', 'wk...kw', 'wkW.Wkw', '.wkkkw.', '..www..'], { w: '#e8f4ff', k: '#6a8aa8', W: '#ffffff' }, flat));
+  memo('chakram', () => tex3d(['..www..', '.wkkkw.', 'wkW.Wkw', 'wk...kw', 'wkW.Wkw', '.wkkkw.', '..www..'], { w: '#e8f4ff', k: '#6a8aa8', W: '#ffffff' }, flat));
 
-export const missileTex = () => memo('missile', () => hdTex(['.gg..', 'rgGGW', '.gg..'], { g: '#2a8a3a', G: '#7dff6a', W: '#ffffff', r: '#ff7a2d' }, flat));
+export const missileTex = () => memo('missile', () => tex3d(['.gg..', 'rgGGW', '.gg..'], { g: '#2a8a3a', G: '#7dff6a', W: '#ffffff', r: '#ff7a2d' }, flat));
 
 export const turretTex = () =>
   memo('turret', () =>
-    hdTex(['...kkk...', '..kyyyk..', 'kkkyWykkk', '..kmmmk..', '.kmMMMmk.', '.kmMMMmk.', 'kmmmmmmmk', 'kkkkkkkkk', '.........'], { k: '#08050c', y: '#ffc94a', W: '#fff3c0', m: '#4a4a5e', M: '#7a7a8e' }, { glow: 'yW', shadow: true }),
+    tex3d(['...kkk...', '..kyyyk..', 'kkkyWykkk', '..kmmmk..', '.kmMMMmk.', '.kmMMMmk.', 'kmmmmmmmk', 'kkkkkkkkk', '.........'], { k: '#08050c', y: '#ffc94a', W: '#fff3c0', m: '#4a4a5e', M: '#7a7a8e' }, { glow: 'yW', metal: 'mM', shadow: true }),
   );
 
-export const crystalTex = () => memo('gem', () => hdTex(['..w..', '.wwl.', 'wwlld', 'wlldd', '.ldd.', '..d..'], { w: '#ffffff', l: '#cfcfcf', d: '#858585' }, flat));
+export const crystalTex = () => memo('gem', () => tex3d(['..w..', '.wwl.', 'wwlld', 'wlldd', '.ldd.', '..d..'], { w: '#ffffff', l: '#cfcfcf', d: '#858585' }, flat));
 
-export const droneTex = () => memo('drone', () => hdTex(['...m...', '..mMm..', '.mMwMm.', 'mMMwMMm', '.mmmmm.'], { m: '#8a4dff', M: '#c46bff', w: '#ffffff' }, flat));
+export const droneTex = () =>
+  memo('drone', () => tex3d(['...m...', '..mMm..', '.mMwMm.', 'mMMwMMm', '.mmmmm.'], { m: '#8a4dff', M: '#c46bff', w: '#ffffff' }, { glow: 'w', metal: 'mM' }));
 
-export const mineTex = () => memo('mine', () => hdTex(['.kkkk.', 'kroork', 'koyyok', 'koyyok', 'kroork', '.kkkk.'], { k: '#1a0a06', r: '#5c1a0a', o: '#ff7a2d', y: '#ffd24a' }, { glow: 'oy' }));
+export const mineTex = () => memo('mine', () => tex3d(['.kkkk.', 'kroork', 'koyyok', 'koyyok', 'kroork', '.kkkk.'], { k: '#1a0a06', r: '#5c1a0a', o: '#ff7a2d', y: '#ffd24a' }, { glow: 'oy' }));
 
 export const meteorTex = () =>
-  memo('meteor', () => hdTex(['..ooo..', '.oyyyo.', 'oyWWyyo', 'oyWWyyo', 'oyyyyyo', '.oyyyo.', '..ooo..'], { o: '#ff4a1a', y: '#ffb03a', W: '#fff3c0' }, flat));
+  memo('meteor', () => tex3d(['..ooo..', '.oyyyo.', 'oyWWyyo', 'oyWWyyo', 'oyyyyyo', '.oyyyo.', '..ooo..'], { o: '#ff4a1a', y: '#ffb03a', W: '#fff3c0' }, flat));
 
 export const pylonTex = () =>
   memo('pylon', () =>
-    hdTex(['...t...', '..tWt..', '...t...', '..kkk..', '..kck..', '..kck..', '.kkckk.', '.kcCck.', '.kcCck.', 'kkkkkkk', '.......'], { t: '#3ef0ff', W: '#ffffff', k: '#0a0818', c: '#2d4a8f', C: '#3ef0ff' }, { glow: 'tWC', shadow: true }),
+    tex3d(['...t...', '..tWt..', '...t...', '..kkk..', '..kck..', '..kck..', '.kkckk.', '.kcCck.', '.kcCck.', 'kkkkkkk', '.......'], { t: '#3ef0ff', W: '#ffffff', k: '#0a0818', c: '#2d4a8f', C: '#3ef0ff' }, { glow: 'tWC', shadow: true }),
   );
 
-// ---------- эффекты ----------
+// ---------- эффекты (пиксельные) ----------
 
 export const pixelTex = () =>
   memo('pixel', () => {
@@ -541,45 +643,26 @@ export const pixelTex = () =>
     return toTex(c);
   });
 
-// мягкая точка для искр и брызг: 2×2 точки мира-арта
-export const dotTex = () =>
-  memo('dot', () => {
-    const S = 16;
-    const { c, g } = canvas(S, S);
-    const gr = g.createRadialGradient(S / 2, S / 2, 0, S / 2, S / 2, S / 2);
-    gr.addColorStop(0, 'rgba(255,255,255,1)');
-    gr.addColorStop(0.45, 'rgba(255,255,255,0.85)');
-    gr.addColorStop(1, 'rgba(255,255,255,0)');
-    g.fillStyle = gr;
-    g.fillRect(0, 0, S, S);
-    return toTex(c, 8);
-  });
-
 export const splatTextures = () =>
   memo('splat', () => {
     const out: Texture[] = [];
     for (let v = 0; v < 3; v++) {
-      const S = 48;
+      const S = 24;
       const { c, g } = canvas(S, S);
       const r = rng(101 + v * 17);
-      for (let k = 0; k < 7; k++) {
-        const x = S / 2 + (r() - 0.5) * 16;
-        const y = S / 2 + (r() - 0.5) * 12;
-        const rad = 5 + r() * 8;
-        const gr = g.createRadialGradient(x, y, 0, x, y, rad);
-        gr.addColorStop(0, 'rgba(110,12,36,0.95)');
-        gr.addColorStop(0.7, 'rgba(74,8,24,0.8)');
-        gr.addColorStop(1, 'rgba(74,8,24,0)');
-        g.fillStyle = gr;
-        g.fillRect(x - rad, y - rad, rad * 2, rad * 2);
+      for (let y = 0; y < S; y++) {
+        for (let x = 0; x < S; x++) {
+          const d = Math.hypot(x - S / 2 + 0.5, y - S / 2 + 0.5);
+          if (d < 6 + r() * 4) {
+            g.fillStyle = d < 3 ? '#7a1028' : d < 5 ? '#5e0c20' : '#4a0818';
+            g.fillRect(x, y, 1, 1);
+          } else if (d < 11 && r() < 0.1) {
+            g.fillStyle = '#4a0818';
+            g.fillRect(x, y, 1, 1);
+          }
+        }
       }
-      for (let k = 0; k < 8; k++) {
-        g.fillStyle = 'rgba(90,10,30,0.8)';
-        g.beginPath();
-        g.arc(S / 2 + (r() - 0.5) * 40, S / 2 + (r() - 0.5) * 34, 1 + r() * 1.6, 0, Math.PI * 2);
-        g.fill();
-      }
-      out.push(toTex(c, 4));
+      out.push(toTex(c, 2));
     }
     return out;
   });
@@ -594,7 +677,7 @@ export const lightTex = () =>
     grad.addColorStop(1, 'rgba(255,255,255,0)');
     g.fillStyle = grad;
     g.fillRect(0, 0, S, S);
-    return toTex(c);
+    return toTex(c, 1, false);
   });
 
 export const vignetteTex = () =>
@@ -607,77 +690,50 @@ export const vignetteTex = () =>
     grad.addColorStop(1, 'rgba(4,2,8,0.75)');
     g.fillStyle = grad;
     g.fillRect(0, 0, S, S);
-    return toTex(c);
+    return toTex(c, 1, false);
   });
 
-// гладкие цифры урона: 5×7 точек, как у старого пиксельного шрифта
+// пиксельные цифры 3×5 с тенью
+const DIGITS = [
+  '111101101101111', '010110010010111', '111001111100111', '111001111001111', '101101111001001',
+  '111100111001111', '111100111101111', '111001010010010', '111101111101111', '111101111001111',
+];
+
 export const digitTextures = () =>
-  memo('digits', () => {
-    const out: Texture[] = [];
-    for (let n = 0; n < 10; n++) {
-      const { c, g } = canvas(20, 28);
-      g.font = '900 25px "Arial Black", "Helvetica Neue", Arial, sans-serif';
-      g.textAlign = 'center';
-      g.textBaseline = 'middle';
-      g.lineJoin = 'round';
-      g.lineWidth = 6;
-      g.strokeStyle = 'rgba(5,3,12,0.95)';
-      g.strokeText(String(n), 10, 15);
+  memo('digits', () =>
+    DIGITS.map((d) => {
+      const { c, g } = canvas(5, 7);
+      g.fillStyle = '#05030c';
+      for (let i = 0; i < 15; i++) if (d[i] === '1') g.fillRect(i % 3, (i / 3) | 0, 3, 3);
       g.fillStyle = '#ffffff';
-      g.fillText(String(n), 10, 15);
-      out.push(toTex(c, 4));
-    }
-    return out;
-  });
+      for (let i = 0; i < 15; i++) if (d[i] === '1') g.fillRect((i % 3) + 1, ((i / 3) | 0) + 1, 1, 1);
+      return toTex(c);
+    }),
+  );
 
 export const impactFrames = () =>
   memo('impact', () => {
-    const S = 44;
-    const m = S / 2;
+    const S = 11;
+    const m = 5;
     const out: Texture[] = [];
     for (let f = 0; f < 3; f++) {
       const { c, g } = canvas(S, S);
-      g.lineCap = 'round';
-      if (f === 0) {
-        const gr = g.createRadialGradient(m, m, 0, m, m, 10);
-        gr.addColorStop(0, 'rgba(255,255,255,1)');
-        gr.addColorStop(1, 'rgba(255,255,255,0)');
-        g.fillStyle = gr;
-        g.fillRect(0, 0, S, S);
-        g.strokeStyle = 'rgba(255,255,255,0.9)';
-        g.lineWidth = 3;
-        for (let k = 0; k < 4; k++) {
-          const a = (k / 4) * Math.PI * 2 + Math.PI / 4;
-          g.beginPath();
-          g.moveTo(m + Math.cos(a) * 4, m + Math.sin(a) * 4);
-          g.lineTo(m + Math.cos(a) * 13, m + Math.sin(a) * 13);
-          g.stroke();
+      for (let y = 0; y < S; y++) {
+        for (let x = 0; x < S; x++) {
+          const dx = x - m;
+          const dy = y - m;
+          const d = Math.hypot(dx, dy);
+          const axis = dx === 0 || dy === 0 || Math.abs(dx) === Math.abs(dy);
+          let a = 0;
+          if (f === 0) a = d <= 1.5 ? 1 : axis && d <= 2.9 ? 0.8 : 0;
+          else if (f === 1) a = Math.abs(d - 3) < 0.6 ? 0.9 : axis && d > 3.5 && d <= 5 ? 1 : 0;
+          else a = Math.abs(d - 4.4) < 0.55 && (x + y) % 2 === 0 ? 0.6 : 0;
+          if (a === 0) continue;
+          g.fillStyle = `rgba(255,255,255,${a})`;
+          g.fillRect(x, y, 1, 1);
         }
-      } else if (f === 1) {
-        g.strokeStyle = 'rgba(255,255,255,0.9)';
-        g.lineWidth = 3;
-        g.beginPath();
-        g.arc(m, m, 12, 0, Math.PI * 2);
-        g.stroke();
-        g.lineWidth = 2.4;
-        for (let k = 0; k < 8; k++) {
-          const a = (k / 8) * Math.PI * 2;
-          g.beginPath();
-          g.moveTo(m + Math.cos(a) * 15, m + Math.sin(a) * 15);
-          g.lineTo(m + Math.cos(a) * 20, m + Math.sin(a) * 20);
-          g.stroke();
-        }
-      } else {
-        g.strokeStyle = 'rgba(255,255,255,0.5)';
-        g.lineWidth = 1.6;
-        g.setLineDash([3, 4]);
-        g.beginPath();
-        g.arc(m, m, 18, 0, Math.PI * 2);
-        g.stroke();
       }
-      out.push(toTex(c, 4));
+      out.push(toTex(c));
     }
     return out;
   });
-
-// иконка для манифеста не нужна в игре — рисуется отдельно в public/

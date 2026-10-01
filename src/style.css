@@ -10,7 +10,7 @@
   --arcane: #3ef0ff;
   --crystal: #c46bff;
   --serif: 'Cormorant SC', 'Times New Roman', serif;
-  --pixel: 'Exo 2', 'Helvetica Neue', Arial, sans-serif;
+  --pixel: 'Pixelify Sans', ui-monospace, monospace;
   font-family: var(--pixel);
 }
 
@@ -32,6 +32,7 @@ html, body {
 }
 
 #stage, #stage canvas { position: fixed; inset: 0; display: block; }
+#stage canvas { image-rendering: pixelated; }
 
 
 /* ================= общие элементы: бронзовые рамки ================= */
@@ -567,7 +568,7 @@ html, body {
 .weapon-card.used { border-left-color: var(--glow); }
 .weapon-sum { list-style: none; cursor: pointer; display: flex; flex-direction: column; gap: 2px; }
 .weapon-sum::-webkit-details-marker { display: none; }
-.weapon-name { font-weight: 800; color: var(--ink); }
+.weapon-name { font-weight: 700; color: var(--ink); }
 .weapon-desc { font-size: 13px; color: var(--dim); }
 .weapon-evo { margin-top: 6px; font-size: 13px; color: var(--gold); }
 .weapon-card .build-perk { margin-top: 3px; }
