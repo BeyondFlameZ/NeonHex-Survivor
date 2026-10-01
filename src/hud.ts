@@ -1,7 +1,7 @@
 import type { Settlement } from './meta';
 import { levelChallenges, LEVELS } from './levels';
+import { TIERS } from './modes';
 import type { Profile, RunResult } from './save';
-import { byId } from './weapons';
 
 export interface Card {
   kicker: string;
@@ -11,6 +11,13 @@ export interface Card {
   note?: string;
   gold?: boolean;
   isNew?: boolean;
+  rarity?: number;
+}
+
+export interface BuildInfo {
+  weapons: { name: string; css: string; school: string; level: number; evolved: boolean; perks: string[] }[];
+  sets: { name: string; css: string; count: number; bonuses: string[] }[];
+  gear: { slot: string; name: string; css: string; lines: string[] }[];
 }
 
 export interface WeaponSlot {
@@ -23,6 +30,7 @@ export interface WeaponSlot {
 export interface GearSlot {
   glyph: string;
   filled: boolean;
+  css: string;
 }
 
 export const fmtTime = (sec: number) =>
@@ -43,6 +51,7 @@ export class Hud {
   private lvl = $('lvl');
   private time = $('time');
   private kills = $('kills');
+  private runShards = $('run-shards');
   private bossTimer = $('boss-timer');
   private xpFill = $('xp-fill');
   private choice = $('levelup');
@@ -59,7 +68,7 @@ export class Hud {
   private bossFill = $('boss-fill');
   private pause = $('pause');
   private results = $('results');
-  private c = { lvl: -1, sec: -1, kills: -1, xp: -1, dash: -1, boss: -1, bossLeft: -2 };
+  private c = { lvl: -1, sec: -1, kills: -1, xp: -1, dash: -1, boss: -1, bossLeft: -2, shards: -1 };
   private onReroll: (() => void) | null = null;
   private queue: [string, string][] = [];
   private bannerBusy = false;
@@ -102,7 +111,7 @@ export class Hud {
   }
 
   reset() {
-    this.c = { lvl: -1, sec: -1, kills: -1, xp: -1, dash: -1, boss: -1, bossLeft: -2 };
+    this.c = { lvl: -1, sec: -1, kills: -1, xp: -1, dash: -1, boss: -1, bossLeft: -2, shards: -1 };
     this.choice.hidden = true;
     this.pause.hidden = true;
     this.results.hidden = true;
@@ -152,7 +161,40 @@ export class Hud {
     this.bossbar.hidden = true;
   }
 
-  showPause() {
+  showPause(b?: BuildInfo) {
+    const box = $('pause-build');
+    box.replaceChildren();
+    if (b) {
+      const w = el('div', 'build-col');
+      w.append(el('h3', 'block-title', 'Оружие'));
+      for (const x of b.weapons) {
+        const row = el('div', 'build-item');
+        row.style.setProperty('--c', x.css);
+        row.append(el('span', 'build-name', `${x.name} · ${x.evolved ? '★' : 'ур. ' + x.level}`), el('span', 'build-sub', x.school));
+        for (const pk of x.perks) row.append(el('span', 'build-perk', '• ' + pk));
+        w.append(row);
+      }
+      if (b.sets.length) {
+        w.append(el('h3', 'block-title', 'Сеты'));
+        for (const st of b.sets) {
+          const row = el('div', 'build-item');
+          row.style.setProperty('--c', st.css);
+          row.append(el('span', 'build-name', `${st.name} ${st.count}/4`));
+          for (const bn of st.bonuses) row.append(el('span', 'build-perk', '✓ ' + bn));
+          w.append(row);
+        }
+      }
+      const g = el('div', 'build-col');
+      g.append(el('h3', 'block-title', 'Снаряжение'));
+      for (const x of b.gear) {
+        const row = el('div', 'build-item' + (x.name ? '' : ' empty'));
+        row.style.setProperty('--c', x.css || '#4a3620');
+        row.append(el('span', 'build-sub', x.slot), el('span', 'build-name', x.name || 'пусто'));
+        for (const ln of x.lines) row.append(el('span', 'build-perk', ln));
+        g.append(row);
+      }
+      box.append(w, g);
+    }
     this.pause.hidden = false;
   }
 
@@ -183,12 +225,13 @@ export class Hud {
     this.gslots.replaceChildren();
     for (const g of gear) {
       const box = el('div', 'slot gear' + (g.filled ? ' filled' : ''));
+      if (g.css) box.style.setProperty('--c', g.css);
       box.append(el('span', 'slot-tag', g.glyph));
       this.gslots.append(box);
     }
   }
 
-  update(level: number, time: number, kills: number, xpFrac: number, bossAt: number) {
+  update(level: number, time: number, kills: number, xpFrac: number, bossAt: number, shards: number) {
     const c = this.c;
     if (level !== c.lvl) {
       c.lvl = level;
@@ -198,11 +241,15 @@ export class Hud {
     if (sec !== c.sec) {
       c.sec = sec;
       this.time.textContent = fmtTime(sec);
-      const left = Math.max(-1, bossAt - sec);
+      const left = bossAt < 0 ? -1 : Math.max(-1, Math.ceil(bossAt) - sec);
       if (left !== c.bossLeft) {
         c.bossLeft = left;
         this.bossTimer.textContent = left > 0 ? `Босс через ${fmtTime(left)}` : '';
       }
+    }
+    if (shards !== c.shards) {
+      c.shards = shards;
+      this.runShards.textContent = shards > 0 ? `◆ ${shards}` : '';
     }
     if (kills !== c.kills) {
       c.kills = kills;
@@ -222,7 +269,7 @@ export class Hud {
     this.choices.replaceChildren();
 
     cards.forEach((card, i) => {
-      const b = el('button', 'choice' + (card.gold ? ' gold' : '')) as HTMLButtonElement;
+      const b = el('button', 'choice' + (card.gold ? ' gold' : '') + (card.rarity !== undefined ? ` r${card.rarity}` : '')) as HTMLButtonElement;
       const head = el('span', 'choice-head');
       if (card.badge) {
         const badge = el('span', 'badge', card.badge.text);
@@ -259,10 +306,12 @@ export class Hud {
     this.choice.hidden = true;
     this.pause.hidden = true;
 
+    const mode = r.daily ? 'Испытание дня' : r.endless ? 'Бесконечный режим' : TIERS[r.tier].name;
     box.append(
-      el('h2', 'title ' + (r.won ? 'gold' : 'blood'), r.won ? 'Победа' : 'Сигнал потерян'),
-      el('p', 'sub', `${L.name} · ${fmtTime(r.time)} · уровень ${r.lvl} · убито ${r.kills}`),
+      el('h2', 'title ' + (r.won ? 'gold' : 'blood'), r.won ? 'Победа' : r.endless ? 'Конец пути' : 'Сигнал потерян'),
+      el('p', 'sub', `${L.name} · ${mode} · ${fmtTime(r.time)} · уровень ${r.lvl} · убито ${r.kills}`),
     );
+    if (r.endless) box.append(el('p', 'sub', `Боссов убито: ${r.bosses}${s.newBest ? ' · новый рекорд!' : ` · рекорд ${fmtTime(p.best[r.level])}`}`));
 
     const stars = el('div', 'star-list');
     levelChallenges(r.level).forEach((c, i) => {
@@ -275,15 +324,15 @@ export class Hud {
     box.append(stars);
 
     const loot = el('div', 'loot');
-    loot.append(el('div', 'loot-line', `Осколки за забег: +${s.base}`));
+    loot.append(el('div', 'loot-line', `Осколки за забег: +${s.base}${r.tier ? ` (×${TIERS[r.tier].reward} за сложность)` : ''}`));
+    if (r.shards) loot.append(el('div', 'loot-line', `Из них подобрано с гоблинов: ${r.shards}`));
     if (s.starShards) loot.append(el('div', 'loot-line', `За новые звёзды: +${s.starShards}`));
+    if (s.dailyBonus) loot.append(el('div', 'loot-line ach', `Испытание дня пройдено: +${s.dailyBonus}`));
     for (const a of s.newAch) loot.append(el('div', 'loot-line ach', `Достижение «${a.name}»: +${a.reward}`));
     loot.append(el('div', 'loot-total', `Итого: +${s.total} ◆`));
-    if (s.unlocked) {
-      const w = byId(s.unlocked);
-      loot.append(el('div', 'loot-line unlock', `Открыт стартовый скрипт: ${w?.name ?? s.unlocked}`));
-      if (r.level + 1 < LEVELS.length) loot.append(el('div', 'loot-line unlock', `Открыта локация: ${LEVELS[r.level + 1].name}`));
-    }
+    if (s.unlockedClass) loot.append(el('div', 'loot-line unlock', `Открыт класс: ${s.unlockedClass}`));
+    if (s.unlockedLevel) loot.append(el('div', 'loot-line unlock', `Открыта локация: ${s.unlockedLevel}`));
+    if (r.won && r.tier < 2 && !r.daily) loot.append(el('div', 'loot-line unlock', `Доступна сложность «${TIERS[r.tier + 1].name}»`));
     box.append(loot);
 
     const btns = el('div', 'btn-row');

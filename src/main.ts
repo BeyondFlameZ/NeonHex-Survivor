@@ -1,32 +1,41 @@
 import './style.css';
-import { Application } from 'pixi.js';
+import { Application, type Ticker } from 'pixi.js';
+import { Sound } from './audio';
 import { COL } from './config';
 import { Game } from './game';
 import { Hud } from './hud';
 import { Input } from './input';
 import { Menu } from './menu';
 import { settle } from './meta';
+import type { RunOpts } from './modes';
 import { loadProfile, type Profile } from './save';
 
 async function boot() {
+  let profile: Profile = loadProfile();
   const app = new Application();
+  const res = [1, 1.5, 2][profile.settings.quality] ?? 1.5;
   await app.init({
     resizeTo: window,
     background: COL.bg,
     antialias: false,
     autoDensity: true,
-    // пиксель-арт рендерим в CSS-пикселях, браузер апскейлит без сглаживания (image-rendering: pixelated)
-    resolution: 1,
+    resolution: Math.min(window.devicePixelRatio || 1, res),
     powerPreference: 'high-performance',
   });
   document.getElementById('stage')!.appendChild(app.canvas);
   document.addEventListener('gesturestart', (e) => e.preventDefault());
 
+  const sfx = new Sound();
+  sfx.setVolumes(profile.settings.music, profile.settings.sfx);
+  // iOS включает звук только по жесту — разблокируем на каждом касании (дёшево, если уже работает)
+  const unlock = () => sfx.unlock();
+  window.addEventListener('pointerdown', unlock, { passive: true });
+  window.addEventListener('keydown', unlock);
+
   const input = new Input(app.canvas);
   const hud = new Hud();
-  let profile: Profile = loadProfile();
   let game: Game | null = null;
-  let current = { level: 0, start: 'bolt' };
+  let current: RunOpts = { level: 0, tier: 0, endless: false, daily: null, cls: 'cyber' };
 
   const destroyGame = () => {
     if (!game) return;
@@ -38,18 +47,21 @@ async function boot() {
   const toMap = () => {
     destroyGame();
     hud.setRunVisible(false);
-    menu.show('map');
+    sfx.startMusic(5);
+    menu.show(current.daily ? 'title' : 'map');
   };
 
-  const startRun = (level: number, start: string) => {
+  const startRun = (o: RunOpts) => {
     destroyGame();
-    current = { level, start };
+    current = o;
     menu.hide();
     hud.setRunVisible(true);
     input.reset();
-    game = new Game(app, input, hud, level, profile, start, (r) => {
+    sfx.duck(false);
+    sfx.startMusic(o.level);
+    game = new Game(app, input, hud, sfx, o, profile, (r) => {
       const s = settle(profile, r);
-      hud.showResults(r, s, profile, { toMap, retry: () => startRun(level, start) });
+      hud.showResults(r, s, profile, { toMap, retry: () => startRun(o) });
     });
     app.stage.addChildAt(game.root, 0);
   };
@@ -58,21 +70,30 @@ async function boot() {
     play: startRun,
     setProfile: (p) => {
       profile = p;
+      sfx.setVolumes(p.settings.music, p.settings.sfx);
     },
+    audio: () => sfx.setVolumes(profile.settings.music, profile.settings.sfx),
+    click: () => sfx.click(),
   });
 
   hud.bindDash(() => input.queueDash());
   hud.bindPause({
     toggle: () => game?.togglePause(),
-    restart: () => startRun(current.level, current.start),
+    restart: () => startRun(current),
     quit: () => game?.quit(),
   });
 
   app.stage.addChild(input.view);
-  app.ticker.add((t) => game?.frame(t.deltaMS / 1000));
+  app.ticker.add((t: Ticker) => game?.frame(t.deltaMS / 1000));
 
   hud.setRunVisible(false);
+  sfx.startMusic(5);
   menu.show('title');
+
+  // офлайн-режим и установка на домашний экран — только на опубликованной версии
+  if ('serviceWorker' in navigator && location.hostname.endsWith('github.io')) {
+    navigator.serviceWorker.register('./sw.js').catch(() => undefined);
+  }
 }
 
 boot();

@@ -2,15 +2,34 @@ import { Application, Container, Graphics, Sprite, Texture, TilingSprite } from 
 import { AdvancedBloomFilter } from 'pixi-filters';
 import { CFG, COL } from './config';
 import { SpatialGrid } from './grid';
-import type { Card, Hud } from './hud';
+import type { Sound } from './audio';
+import { classById, type ClassDef } from './classes';
+import type { BuildInfo, Card, Hud } from './hud';
 import type { Input } from './input';
-import { B, ELITE_AT, LEVELS, UNLOCK_AT, WEIGHT, type EnemyDef, type LevelDef } from './levels';
+import { B, ELITE_AT, GOBLIN, LEVELS, UNLOCK_AT, WEIGHT, type EnemyDef, type LevelDef } from './levels';
+import { TIERS, type RunOpts, type Tier } from './modes';
 import { metaBonuses } from './meta';
 import { DamageNumbers } from './numbers';
 import { Pool } from './pool';
 import type { Profile, RunResult } from './save';
 import { SCHOOL_ORDER, SCHOOLS, type SchoolId } from './schools';
-import { computeStats, GEAR_GLYPH, GEAR_SLOTS, gearHasElem, rollGear, statText, type Gear, type Stats } from './stats';
+import {
+  computeStats,
+  DROP_CHEST,
+  DROP_LEGEND,
+  DROP_LEVELUP,
+  GEAR_GLYPH,
+  GEAR_SLOTS,
+  gearHasElem,
+  legendById,
+  RARITY,
+  rollGear,
+  rollRarity,
+  statText,
+  type Gear,
+  type MetaStats,
+  type Stats,
+} from './stats';
 import * as tex from './textures';
 import { ARSENAL, byId } from './weapons';
 import { F_NOFX, F_NOKB, F_NONUM, F_NOSET, type Weapon, type WeaponDef } from './weapons/types';
@@ -32,7 +51,8 @@ interface Arc { pts: number[]; color: number; life: number; max: number; w: numb
 interface Pillar { x: number; y: number; color: number; life: number; max: number; w: number }
 interface Zone { x: number; y: number; r: number; life: number; max: number; dps: number; elem: number; color: number; tick: number }
 interface Hazard { x: number; y: number; r: number; delay: number; max: number; life: number; dmg: number; color: number; hit: boolean }
-interface Pickup { kind: 'heal' | 'chest' | 'shrine' | 'fountain'; x: number; y: number; life: number; s: Sprite }
+type PickKind = 'heal' | 'chest' | 'lchest' | 'shrine' | 'fountain' | 'shard';
+interface Pickup { kind: PickKind; x: number; y: number; life: number; s: Sprite }
 interface Decoy { x: number; y: number; life: number; max: number; dmg: number; r: number; s: Sprite }
 interface Option { card: Card; act: () => void }
 interface PropSpr { s: Sprite; light: number; x: number; y: number; anim: Texture[] | null }
@@ -44,6 +64,7 @@ const IMPACT_FRAME = 0.04;
 const MAX_WEAPONS = 6;
 const CHUNK = 320;
 const BOSS = 9;
+const GOB = 10;
 // пресеты яркости из настроек: тёмная / обычная / яркая
 const LOOK = [
   { ground: 0.8, vig: 1, glow: 0.24, fog: 0.14 },
@@ -83,6 +104,23 @@ export class Game {
   viewHH = 400;
 
   private L: LevelDef;
+  private T: Tier;
+  private cls: ClassDef;
+  private levelIdx: number;
+  private mods: Set<string>;
+  private extra: MetaStats;
+  private legs = new Set<string>();
+  private dashMul = 1;
+  private phoenixCd = 0;
+  private legHits = 0;
+  private wfT = 0;
+  private voidT = 5;
+  private nextBoss: number;
+  private bossHp = 1;
+  private goblinAt: number[];
+  private chaosT = 30;
+  private dailyEliteT = 60;
+  private endlessEliteT = 120;
   private roster: EnemyDef[];
   private eyeCol: number[];
   private meta: ReturnType<typeof metaBonuses>;
@@ -202,25 +240,47 @@ export class Game {
   private tmpX = 0;
   private tmpY = 0;
 
-  private run = { crits: 0, evolutions: 0, dashes: 0, minHp: 1, shrines: 0, chests: 0, maxSet: 0 };
+  private run = { crits: 0, evolutions: 0, dashes: 0, minHp: 1, shrines: 0, chests: 0, maxSet: 0, shards: 0, goblins: 0, bosses: 0, legends: 0 };
 
   constructor(
     private app: Application,
     private input: Input,
     private hud: Hud,
-    private levelIdx: number,
+    private sfx: Sound,
+    private opts: RunOpts,
     private profile: Profile,
-    startId: string,
     private onEnd: (r: RunResult) => void,
   ) {
-    this.L = LEVELS[levelIdx];
-    this.roster = [...this.L.enemies, this.L.boss];
+    this.levelIdx = opts.level;
+    this.L = LEVELS[opts.level];
+    this.T = TIERS[opts.tier] ?? TIERS[0];
+    this.cls = classById(opts.cls);
+    this.mods = new Set(opts.daily ?? []);
+    this.nextBoss = this.L.bossAt;
+    this.goblinAt = [75 + Math.random() * 30, 250 + Math.random() * 40];
+    this.roster = [...this.L.enemies, this.L.boss, GOBLIN];
     this.eyeCol = this.roster.map((d) => tex.hexNum(d.pal[2]));
     this.meta = metaBonuses(profile);
-    this.stats = computeStats(this.gear, this.meta);
+    const cm = this.cls.mods;
+    const elem = [0, 0, 0, 0, 0, 0];
+    if (cm.elem) elem[cm.elem[0]] += cm.elem[1];
+    this.extra = {
+      dmg: this.meta.dmg + (cm.dmg ?? 0),
+      maxHp: this.meta.maxHp + (cm.maxHp ?? 0),
+      regen: this.meta.regen + (cm.regen ?? 0),
+      move: this.meta.move,
+      pickup: this.meta.pickup,
+      crit: this.meta.crit,
+      cd: this.meta.cd,
+      area: this.meta.area + (cm.area ?? 0),
+      dur: cm.dur ?? 0,
+      elem,
+    };
+    this.stats = this.calcStats();
     this.hp = this.stats.maxHp;
-    this.rerolls = this.meta.rerolls;
+    this.rerolls = this.meta.rerolls + (cm.rerolls ?? 0);
     this.revive = this.meta.revive;
+    this.dashMul = cm.dashCd ?? 1;
     this.look = LOOK[Math.max(0, Math.min(2, profile.settings.bright ?? 1))];
 
     this.bg = new TilingSprite({ texture: tex.groundTile(this.L.ground, this.look.ground), width: app.screen.width, height: app.screen.height });
@@ -236,11 +296,11 @@ export class Game {
     this.glow.alpha = this.look.glow;
     this.glow.scale.set(3.2);
 
-    this.mageTex = tex.mageFrames();
+    this.mageTex = tex.mageFrames(this.cls.pal);
     this.mechTex = tex.mechFrames();
     this.minionTex = tex.minionFrames();
     this.enemyTex = this.roster.map((d) => tex.enemyFrames(d));
-    this.rimTex = this.roster.map((d) => tex.rimMasks(d.body));
+    this.rimTex = this.roster.map((d) => tex.rimMasks(d));
     this.splatTex = tex.splatTextures();
     this.impactTex = tex.impactFrames();
     const pixel = tex.pixelTex();
@@ -273,8 +333,9 @@ export class Game {
     this.shots = new Pool<SK>(CFG.maxEnemyShots, ['x', 'y', 'vx', 'vy', 'life', 'dmg'], tex.orbTex(), shotLayer, 'normal', PX);
     this.ghosts = new Pool<HK>(CFG.maxGhosts, ['x', 'y', 'life', 'max'], tex.mageGhost(), ghostLayer, 'add', PX);
     this.minions = new Pool<MK>(CFG.maxMinions, ['x', 'y', 'life', 'dmg', 'ai', 'tg'], this.minionTex[0], minionLayer, 'normal', PX);
-    this.gibs = new Pool<PK>(CFG.maxGibs, ['x', 'y', 'vx', 'vy', 'life', 'max'], pixel, gibLayer, 'normal', PX);
-    this.sparks = new Pool<PK>(CFG.maxSparks, ['x', 'y', 'vx', 'vy', 'life', 'max'], pixel, sparkLayer, 'add', PX);
+    const dot = tex.dotTex();
+    this.gibs = new Pool<PK>(CFG.maxGibs, ['x', 'y', 'vx', 'vy', 'life', 'max'], dot, gibLayer, 'normal', PX);
+    this.sparks = new Pool<PK>(CFG.maxSparks, ['x', 'y', 'vx', 'vy', 'life', 'max'], dot, sparkLayer, 'add', PX);
     this.impacts = new Pool<IK>(CFG.maxImpacts, ['x', 'y', 't'], this.impactTex[0], impactLayer, 'add', PX);
     this.numbers = new DamageNumbers(CFG.maxNumbers, numberLayer, tex.digitTextures());
 
@@ -294,7 +355,7 @@ export class Game {
       this.propLayer.addChild(s);
       this.freeProps.push(s);
     }
-    for (let i = 0; i < 16; i++) {
+    for (let i = 0; i < 48; i++) {
       const s = new Sprite(pixel);
       s.anchor.set(0.5, 0.8);
       s.scale.set(PX);
@@ -363,8 +424,15 @@ export class Game {
     this.vignette.alpha = this.look.vig;
     this.root.addChild(this.scene, this.vignette, this.hurtOverlay, this.screenG);
 
-    this.addWeapon(byId(startId) ?? ARSENAL[0]);
-    this.hud.announce(`${this.L.name} · ${this.L.sub}`, '#ffc94a');
+    this.addWeapon(byId(this.cls.start) ?? ARSENAL[0]);
+    const tag = opts.daily ? 'Испытание дня' : opts.endless ? 'Бесконечный режим' : this.T.name;
+    this.hud.announce(`${this.L.name} · ${tag}`, '#ffc94a');
+    if (profile.life.runs === 0) {
+      this.hud.announce('Веди пальцем по экрану — оружие стреляет само', '#e8dcc4');
+      this.hud.announce('Собирай кристаллы опыта, чтобы расти', '#c46bff');
+      this.hud.announce('Кнопка справа — рывок сквозь врагов', '#3ef0ff');
+      this.hud.announce('На 8:00 придёт босс. Убей его — и локация пройдена', '#ff5a5a');
+    }
   }
 
   destroy() {
@@ -386,7 +454,8 @@ export class Game {
     if (this.over || (this.paused && !this.userPaused)) return;
     this.userPaused = !this.userPaused;
     this.paused = this.userPaused;
-    if (this.userPaused) this.hud.showPause();
+    this.sfx.duck(this.userPaused);
+    if (this.userPaused) this.hud.showPause(this.buildInfo());
     else this.hud.hidePause();
   }
 
@@ -409,7 +478,8 @@ export class Game {
     let set = 0;
     if (elem === 0 && this.setCounts.electro >= 2) set = 0.15;
     if (elem === 4 && this.setCounts.mech >= 2) set = 0.25;
-    return (1 + this.stats.dmg + this.stats.elem[elem] + set) * (this.rage > 0 ? 1.6 : 1);
+    const reaper = this.legs.has('reaper') ? 1 + Math.min(0.6, this.kills / 5000) : 1;
+    return (1 + this.stats.dmg + this.stats.elem[elem] + set) * (this.rage > 0 ? 1.6 : 1) * reaper * (this.mods.has('glass') ? 2 : 1);
   }
   areaMul() {
     return 1 + this.stats.area;
@@ -423,6 +493,13 @@ export class Game {
   amount() {
     return this.stats.amount;
   }
+  private calcStats() {
+    const s = computeStats(this.gear, this.extra);
+    if (this.mods.has('glass')) s.maxHp = Math.round(s.maxHp * 0.5);
+    if (this.mods.has('noregen')) s.regen = 0;
+    return s;
+  }
+
   setCount(id: SchoolId) {
     return this.setCounts[id];
   }
@@ -579,6 +656,11 @@ export class Game {
     if (f.frz[j] > 0 && this.setCounts.kinetic >= 2) d *= 1.5;
     if (crit) this.run.crits++;
     f.hp[j] -= d;
+    if (f.type[j] === GOB && Math.random() < 0.15) this.placePickupAt('shard', f.x[j], f.y[j], 25);
+    if (!(flags & F_NONUM) || crit) {
+      if (crit) this.sfx.crit();
+      else this.sfx.hit(elem);
+    }
     f.flash[j] = 0.08;
     if (f.stz[j] > 0) f.sacc[j] += d;
 
@@ -606,10 +688,32 @@ export class Game {
     }
     if ((!(flags & F_NONUM) || crit) && this.profile.settings.numbers) this.numbers.add(f.x[j], f.y[j] - f.r[j] - 8, d, crit);
 
+    if (crit && !(flags & F_NOSET) && this.legs.has('madness')) {
+      this.aoe(f.x[j], f.y[j], 40 * this.areaMul(), d * 0.4, elem, F_NOSET | F_NONUM);
+      this.impact(f.x[j], f.y[j], COL.gold, PX * 2);
+    }
+    if (!(flags & F_NOSET) && this.legs.has('thunder') && ++this.legHits % 8 === 0) this.chainThunder(j);
     if (elem === 0 && !(flags & F_NOSET) && this.setCounts.electro >= 4 && ++this.elecHits % 10 === 0) {
       this.orbital(f.x[j], f.y[j], 36 * this.areaMul(), 20 * this.dmgMul(0), COL.arcane, 0, F_NOSET);
     }
     return f.hp[j] <= 0;
+  }
+
+  private chainThunder(from: number) {
+    const f = this.enemies.f;
+    const except = new Set([from]);
+    let x = f.x[from];
+    let y = f.y[from];
+    const dmg = 25 * this.dmgMul(0);
+    for (let k = 0; k < 4; k++) {
+      const t = this.nearest(x, y, 160, except);
+      if (t < 0) break;
+      except.add(t);
+      this.arc(this.lightning(x, y - 6, f.x[t], f.y[t] - 6), COL.arcane, 0.18, 2);
+      this.hit(t, dmg, 0, 0, 0, F_NOSET | F_NOFX);
+      x = f.x[t];
+      y = f.y[t];
+    }
   }
 
   aoe(x: number, y: number, r: number, dmg: number, elem: number, flags = 0, onHit?: (j: number) => void) {
@@ -832,6 +936,7 @@ export class Game {
   private hurtPlayer(dmg: number) {
     if (this.iframes > 0 || this.dashT > 0 || this.mechT > 0 || this.over || this.victoryT >= 0) return;
     this.hp -= dmg;
+    this.sfx.hurt();
     this.iframes = CFG.player.iframes;
     this.addShake(6);
     this.hurt = 1;
@@ -890,6 +995,9 @@ export class Game {
     if (this.shakeAmt > 0) this.shakeAmt = Math.max(0, this.shakeAmt - dt * 40);
     if (this.hurt > 0) this.hurt = Math.max(0, this.hurt - dt * 2.5);
     this.heal(s.regen * dt);
+    if (this.phoenixCd > 0) this.phoenixCd -= dt;
+    this.updateLegends(dt);
+    this.updateDailyMods(dt);
 
     if (this.conduit > 0) {
       this.conduit -= dt;
@@ -941,7 +1049,15 @@ export class Game {
     }
 
     if (this.hp <= 0) {
-      if (this.revive) {
+      if (this.legs.has('phoenix') && this.phoenixCd <= 0) {
+        this.phoenixCd = 60;
+        this.hp = this.stats.maxHp * 0.3;
+        this.iframes = 1.5;
+        this.impact(this.px, this.py, 0xff7a2d, PX * 6);
+        this.flash(this.px, this.py, 360, 1.6, 0xff7a2d, 0.6);
+        this.hud.announce('Сердце феникса', '#ff8a1a');
+        this.sfx.legendary();
+      } else if (this.revive) {
         this.revive = false;
         this.hp = this.stats.maxHp * 0.5;
         this.iframes = 2;
@@ -959,10 +1075,89 @@ export class Game {
     if (this.pending > 0 && !this.paused) this.openLevelUp();
   }
 
+  private updateLegends(dt: number) {
+    if (this.legs.has('wildfire') && this.moving) {
+      this.wfT -= dt;
+      if (this.wfT <= 0) {
+        this.wfT = 0.2;
+        this.zone(this.px, this.py + 6, 22 * this.areaMul(), 1.6 * this.durMul(), 18 * this.dmgMul(1), 1, SCHOOLS.pyro.color);
+      }
+    }
+    if (this.legs.has('void')) {
+      this.voidT -= dt;
+      if (this.voidT <= 0) {
+        this.voidT = 5;
+        const R = 130 * this.areaMul();
+        this.aoe(this.px, this.py, R, 35 * this.dmgMul(5), 5, F_NONUM);
+        this.impact(this.px, this.py, SCHOOLS.glitch.color, PX * 6);
+        this.flash(this.px, this.py, R * 2.5, 1.4, SCHOOLS.glitch.color, 0.3);
+        this.pillars.push({ x: this.px, y: this.py, color: SCHOOLS.glitch.color, life: 0.2, max: 0.2, w: 18 });
+        this.sfx.boom();
+      }
+    }
+  }
+
+  private updateDailyMods(dt: number) {
+    if (this.mods.has('chaos')) {
+      this.chaosT -= dt;
+      if (this.chaosT <= 0) {
+        this.chaosT = 30;
+        this.shrineBuff((Math.random() * 4) | 0);
+      }
+    }
+    if (this.mods.has('elite') && this.time > 30) {
+      this.dailyEliteT -= dt;
+      if (this.dailyEliteT <= 0) {
+        this.dailyEliteT = 60;
+        const type = this.pickType();
+        this.ringPoint();
+        this.spawnEnemy(type, this.tmpX, this.tmpY, 1, 0);
+        this.hud.announce(`Элита: ${this.roster[type].name}`, '#ffc94a');
+      }
+    }
+  }
+
+  private spawnGoblin() {
+    const a = Math.random() * TAU;
+    const i = this.spawnEnemy(GOB, this.px + Math.cos(a) * 240, this.py + Math.sin(a) * 240, 0, 0);
+    if (i < 0) return;
+    this.hud.announce('Гоблин-майнер! Догони его', '#ffc94a');
+    this.sfx.goblin();
+  }
+
+  // состав билда для экрана паузы
+  buildInfo(): BuildInfo {
+    return {
+      weapons: this.weapons.map((w) => ({
+        name: w.evolved ? w.def.evo.name : w.def.name,
+        css: SCHOOLS[w.def.school].css,
+        school: SCHOOLS[w.def.school].name,
+        level: w.level,
+        evolved: w.evolved,
+        perks: w.def.perks.slice(0, w.level - 1),
+      })),
+      sets: SCHOOL_ORDER.filter((id) => this.setCounts[id] > 0).map((id) => ({
+        name: SCHOOLS[id].name,
+        css: SCHOOLS[id].css,
+        count: this.setCounts[id],
+        bonuses: [this.setCounts[id] >= 2 ? SCHOOLS[id].set2 : '', this.setCounts[id] >= 4 ? SCHOOLS[id].set4 : ''].filter(Boolean),
+      })),
+      gear: this.gear.map((g, k) => ({
+        slot: GEAR_SLOTS[k],
+        name: g?.name ?? '',
+        css: g ? RARITY[g.rarity].css : '',
+        lines: g ? [...g.stats.map(statText), ...(g.leg ? [legendById(g.leg)?.desc ?? ''] : [])] : [],
+      })),
+    };
+  }
+
   private end(won: boolean) {
     if (this.over) return;
     this.over = true;
     this.hud.hideBoss();
+    this.sfx.intensity(0);
+    if (won) this.sfx.victory();
+    else this.sfx.defeat();
     this.onEnd({
       level: this.levelIdx,
       won,
@@ -977,6 +1172,14 @@ export class Game {
       shrines: this.run.shrines,
       chests: this.run.chests,
       weapons: this.weapons.map((w) => w.def.id),
+      tier: this.opts.tier,
+      endless: this.opts.endless,
+      daily: !!this.opts.daily,
+      cls: this.cls.id,
+      shards: this.run.shards,
+      goblins: this.run.goblins,
+      bosses: this.run.bosses,
+      legends: this.run.legends,
     });
   }
 
@@ -996,7 +1199,12 @@ export class Game {
     this.dashX = dx;
     this.dashY = dy;
     this.dashT = CFG.dash.time;
-    this.dashCd = CFG.dash.cooldown;
+    this.dashCd = CFG.dash.cooldown * this.dashMul * (this.legs.has('shadow') ? 0.6 : 1);
+    this.sfx.dash();
+    if (this.legs.has('shadow')) {
+      this.aoe(this.px, this.py, 70 * this.areaMul(), 40 * this.dmgMul(5), 5);
+      this.impact(this.px, this.py, SCHOOLS.glitch.color, PX * 4);
+    }
     this.iframes = Math.max(this.iframes, CFG.dash.iframes);
     this.face = dx >= 0 ? 1 : -1;
     this.run.dashes++;
@@ -1052,7 +1260,7 @@ export class Game {
     const t = this.time;
     const L = this.L;
     if (this.victoryT < 0) {
-      let rate = Math.min(45 * L.rate, (1.2 + (t / 60) * 5.5) * L.rate);
+      let rate = Math.min(45 * L.rate, (1.2 + (t / 60) * 5.5) * L.rate) * this.T.rate * (this.mods.has('swarm') ? 1.6 : 1);
       if (this.bossSpawned) rate *= 0.35;
       this.spawnAcc += rate * dt;
       while (this.spawnAcc >= 1) {
@@ -1065,6 +1273,7 @@ export class Game {
     if (t >= this.nextWave && !this.bossSpawned) {
       this.nextWave += 60;
       this.hud.announce('Приближается орда', '#ff5a5a');
+      this.sfx.horde();
       const count = 24 + Math.floor(t / 60) * 8;
       const rad = this.ringRadius();
       const type = this.pickType();
@@ -1082,14 +1291,32 @@ export class Game {
       this.hud.announce(`Элита: ${this.roster[type].name}`, '#ffc94a');
     }
 
-    if (!this.bossSpawned && t >= L.bossAt) {
+    if (!this.bossSpawned && t >= this.nextBoss) {
       this.bossSpawned = true;
       const a = Math.random() * TAU;
       this.spawnEnemy(BOSS, this.px + Math.cos(a) * 320, this.py + Math.sin(a) * 320, 0, 0);
       this.hud.announce(`Босс: ${L.boss.title}`, '#ff2d55');
       this.hud.showBoss(L.boss.title);
       this.addShake(8);
+      this.sfx.boss();
+      this.sfx.intensity(1);
     }
+    // в бесконечном режиме после первого босса элита приходит каждые 2 минуты
+    if (this.opts.endless && t > 480) {
+      this.endlessEliteT -= dt;
+      if (this.endlessEliteT <= 0) {
+        this.endlessEliteT = 120;
+        const type = this.pickType();
+        this.ringPoint();
+        this.spawnEnemy(type, this.tmpX, this.tmpY, 1, 0);
+        this.hud.announce(`Элита: ${this.roster[type].name}`, '#ffc94a');
+      }
+    }
+    while (this.goblinAt.length && t >= this.goblinAt[0]) {
+      this.goblinAt.shift();
+      this.spawnGoblin();
+    }
+    if (this.mods.has('goblins') && this.goblinAt.length === 0) this.goblinAt.push(t + 60);
 
     if (t >= this.nextShrine) {
       this.nextShrine += 70;
@@ -1108,23 +1335,25 @@ export class Game {
     const d = this.roster[type];
     const t = this.time;
     const boss = type === BOSS;
-    const sizeMul = (elite ? 1.4 : 1) * (gen ? 0.65 : 1);
-    const hpScale = boss ? 1 : this.L.hpMul * (1 + t / 240);
+    const giant = this.mods.has('giants') && !boss && type !== GOB;
+    const sizeMul = (elite ? 1.4 : 1) * (gen ? 0.65 : 1) * (giant ? 1.3 : 1);
+    const hpScale =
+      (boss ? this.bossHp * this.T.boss : this.L.hpMul * (1 + t / 240) * this.T.hp) * (this.mods.has('swarm') ? 0.7 : 1) * (giant ? 1.5 : 1) * (type === GOB ? 8 : 1);
     const f = e.f;
     f.x[i] = x;
     f.y[i] = y;
     f.hp[i] = f.mhp[i] = d.hp * hpScale * (elite ? 10 : 1) * (gen ? 0.35 : 1);
-    f.spd[i] = d.spd * (0.9 + Math.random() * 0.2);
+    f.spd[i] = d.spd * (0.9 + Math.random() * 0.2) * (this.mods.has('fast') && type !== GOB ? 1.3 : 1);
     f.r[i] = d.r * sizeMul;
     f.sc[i] = (d.size ?? 1) * sizeMul;
-    f.xp[i] = (d.xp ?? 1) * (elite ? 15 : 1);
-    f.dmg[i] = d.dmg * this.L.dmgMul;
+    f.xp[i] = (d.xp ?? 1) * (elite ? 15 : 1) * (giant ? 1.5 : 1);
+    f.dmg[i] = d.dmg * this.L.dmgMul * this.T.dmg;
     f.kbr[i] = (d.kbr ?? 1) * (elite ? 0.4 : 1);
     f.type[i] = type;
     f.elite[i] = elite;
     f.gen[i] = gen;
     f.ph[i] = Math.random() * 2;
-    f.ai[i] = (d.cd ?? 2) * (0.5 + Math.random() * 0.5);
+    f.ai[i] = type === GOB ? 25 : (d.cd ?? 2) * (0.5 + Math.random() * 0.5);
     for (const k of ['flash', 'kx', 'ky', 'dcd', 'burn', 'bdps', 'stun', 'chill', 'frz', 'inf', 'idps', 'stz', 'sacc', 'st', 'vx', 'vy'] as const) {
       f[k][i] = 0;
     }
@@ -1142,6 +1371,7 @@ export class Game {
     s.f.dmg[i] = dmg;
     s.f.life[i] = 4;
     s.sprites[i].tint = tint;
+    this.sfx.eshot();
   }
 
   private hazard(x: number, y: number, r: number, delay: number, life: number, dmg: number, color: number) {
@@ -1202,7 +1432,7 @@ export class Game {
       const pdx = this.px - x[i];
       const pdy = this.py - y[i];
       const pd = Math.hypot(pdx, pdy) || 1;
-      if (pd > CFG.far && tp !== BOSS) {
+      if (pd > CFG.far && tp !== BOSS && tp !== GOB) {
         this.ringPoint();
         x[i] = this.tmpX;
         y[i] = this.tmpY;
@@ -1325,6 +1555,19 @@ export class Game {
           }
           break;
         }
+        case B.FLEE: {
+          const w = Math.sin(this.time * 3 + f.ph[i] * 5) * 0.6;
+          mvx = (-ux - uy * w) * sp;
+          mvy = (-uy + ux * w) * sp;
+          separate = false;
+          ai[i] -= dt;
+          if (((this.tick + i) & 7) === 0) this.spark(x[i], y[i] - 6, 0, -40, 0.4, COL.gold);
+          if (ai[i] <= 0) {
+            st[i] = 9;
+            hp[i] = 0;
+          }
+          break;
+        }
         case B.BOSS: {
           const res = this.bossBrain(i, dt, ux, uy, d, sp);
           mvx = res[0];
@@ -1372,7 +1615,12 @@ export class Game {
       kx[i] *= 0.85;
       ky[i] *= 0.85;
 
-      if (pd < r[i] + pr) this.hurtPlayer(f.dmg[i] * timeDmg);
+      if (pd < r[i] + pr && f.dmg[i] > 0) {
+        if (this.legs.has('frost') && tp !== BOSS) {
+          this.freeze(i, 5);
+          this.hurtPlayer(f.dmg[i] * timeDmg * 0.7);
+        } else this.hurtPlayer(f.dmg[i] * timeDmg);
+      }
     }
 
     if (this.bossSpawned && this.bossI >= 0) this.hud.setBoss(f.hp[this.bossI] / f.mhp[this.bossI]);
@@ -1430,6 +1678,7 @@ export class Game {
     this.impact(x, y, col, PX * 4);
     this.flash(x, y, 200, 1.3, col, 0.25);
     this.addShake(4);
+    this.sfx.boom();
     for (let k = 0; k < 10; k++) {
       const a = Math.random() * TAU;
       this.spark(x, y, Math.cos(a) * 200, Math.sin(a) * 200, 0.3, col);
@@ -1551,8 +1800,13 @@ export class Game {
     const f = e.f;
     for (let i = e.n - 1; i >= 0; i--) {
       if (f.hp[i] > 0) continue;
-      this.kills++;
       const tp = f.type[i];
+      if (tp === GOB && f.st[i] === 9) {
+        this.hud.announce('Гоблин сбежал', '#9a8a70');
+        e.kill(i);
+        continue;
+      }
+      this.kills++;
       const def = this.roster[tp];
       const x = f.x[i];
       const y = f.y[i];
@@ -1565,10 +1819,33 @@ export class Game {
         this.flash(x, y, 500, 2, COL.gold, 1);
         this.addShake(12);
         this.stop(0.25);
+        this.sfx.boom(true);
+        this.sfx.intensity(0);
+        this.run.bosses++;
         for (let k = 0; k < 30; k++) this.dropGem(x + (Math.random() - 0.5) * 120, y + (Math.random() - 0.5) * 120, 5);
         this.hud.hideBoss();
-        this.hud.announce('Босс повержен', '#ffc94a');
-        this.victoryT = 2.5;
+        if (this.opts.endless) {
+          this.hud.announce(`Босс повержен (${this.run.bosses}). Следующий — через 4 минуты`, '#ffc94a');
+          this.placePickupAt('chest', x, y, 999);
+          this.bossSpawned = false;
+          this.nextBoss = this.time + 240;
+          this.bossHp *= 1.6;
+        } else {
+          this.hud.announce('Босс повержен', '#ffc94a');
+          this.victoryT = 2.5;
+        }
+      } else if (tp === GOB) {
+        this.run.goblins++;
+        this.hud.announce('Гоблин повержен! Забирай добычу', '#ffc94a');
+        this.placePickupAt('lchest', x, y, 999);
+        for (let k = 0; k < 10; k++) {
+          const a = (k / 10) * TAU;
+          this.placePickupAt('shard', x + Math.cos(a) * 40, y + Math.sin(a) * 40, 30);
+        }
+        this.impact(x, y, COL.gold, PX * 5);
+        this.flash(x, y, 300, 1.5, COL.gold, 0.4);
+        this.sfx.boom(true);
+        this.sfx.legendary();
       } else {
         this.dropGem(x, y, f.xp[i]);
         if (f.elite[i]) {
@@ -1577,9 +1854,11 @@ export class Game {
           this.flash(x, y, 240, 1.3, COL.gold, 0.3);
           this.addShake(6);
           this.stop(0.08);
+          this.sfx.boom(true);
         } else if (Math.random() < 0.006) {
           this.placePickupAt('heal', x, y, 30);
         }
+        this.sfx.kill();
         if (big) {
           this.impact(x, y, COL.gold, PX * 3);
           this.flash(x, y, 160, 1, COL.gold, 0.2);
@@ -1795,7 +2074,7 @@ export class Game {
   private dropGem(x: number, y: number, val: number) {
     const g = this.gems;
     const i = g.add();
-    const v = val * (1 + this.meta.xp);
+    const v = val * (1 + this.meta.xp + (this.cls.mods.xp ?? 0)) * (this.legs.has('singular') ? 1.25 : 1);
     if (i < 0) {
       g.f.val[(Math.random() * g.n) | 0] += v;
       return;
@@ -1828,22 +2107,34 @@ export class Game {
       }
       if (d < grab) {
         this.xp += f.val[i];
+        this.sfx.gem();
         this.spark(f.x[i], f.y[i], 0, -60, 0.25, g.sprites[i].tint as number);
         g.kill(i);
       }
     }
   }
 
-  private placePickup(kind: Pickup['kind'], life: number) {
+  private placePickup(kind: PickKind, life: number) {
     const a = Math.random() * TAU;
     const rr = Math.min(this.viewHW, this.viewHH) * 0.75;
     this.placePickupAt(kind, this.px + Math.cos(a) * rr, this.py + Math.sin(a) * rr, life);
   }
 
-  private placePickupAt(kind: Pickup['kind'], x: number, y: number, life: number) {
+  private placePickupAt(kind: PickKind, x: number, y: number, life: number) {
     const s = this.freePick.pop();
     if (!s) return;
-    s.texture = kind === 'heal' ? tex.healOrbTex() : kind === 'chest' ? tex.chestTex() : kind === 'shrine' ? tex.shrineTex() : tex.fountainTex();
+    s.texture =
+      kind === 'heal'
+        ? tex.healOrbTex()
+        : kind === 'chest'
+          ? tex.chestTex()
+          : kind === 'lchest'
+            ? tex.chestTex(true)
+            : kind === 'shrine'
+              ? tex.shrineTex()
+              : kind === 'shard'
+                ? tex.shardPickTex()
+                : tex.fountainTex();
     s.visible = true;
     s.position.set(Math.round(x), Math.round(y));
     this.pickups.push({ kind, x, y, life, s });
@@ -1854,7 +2145,7 @@ export class Game {
       const p = this.pickups[k];
       p.life -= dt;
       const d = Math.hypot(this.px - p.x, this.py - p.y);
-      const take = d < 22;
+      const take = d < (p.kind === 'shard' ? 40 * (1 + this.stats.pickup) : 22);
       if (!take && p.life > 0) continue;
       p.s.visible = false;
       this.freePick.push(p.s);
@@ -1862,12 +2153,19 @@ export class Game {
       if (!take) continue;
 
       switch (p.kind) {
+        case 'shard':
+          this.run.shards += 4;
+          this.sfx.shard();
+          this.spark(p.x, p.y, 0, -80, 0.4, COL.crystal);
+          break;
         case 'heal':
-          this.heal(this.stats.maxHp * 0.25);
+          this.heal(this.stats.maxHp * 0.25 * (this.mods.has('noregen') ? 0.5 : 1));
           this.impact(p.x, p.y, COL.blood, PX * 3);
+          this.sfx.heal();
           break;
         case 'fountain':
-          this.heal(this.stats.maxHp * 0.5);
+          this.sfx.heal();
+          this.heal(this.stats.maxHp * 0.5 * (this.mods.has('noregen') ? 0.5 : 1));
           this.impact(p.x, p.y, COL.blood, PX * 5);
           this.flash(p.x, p.y, 200, 1.2, COL.blood, 0.4);
           this.hud.announce('Омут исцеления', '#ff5a7a');
@@ -1876,29 +2174,41 @@ export class Game {
           this.run.chests++;
           this.impact(p.x, p.y, COL.gold, PX * 5);
           this.flash(p.x, p.y, 240, 1.4, COL.gold, 0.4);
-          this.openGear(true);
+          this.sfx.chest();
+          this.openGear('chest');
+          break;
+        case 'lchest':
+          this.run.chests++;
+          this.impact(p.x, p.y, 0xff8a1a, PX * 6);
+          this.flash(p.x, p.y, 320, 1.6, 0xff8a1a, 0.6);
+          this.sfx.legendary();
+          this.openGear('legend');
           break;
         case 'shrine': {
           this.run.shrines++;
-          const roll = (Math.random() * 4) | 0;
-          if (roll === 0) {
-            this.rage = 20;
-            this.hud.announce('Святилище ярости: урон +60%', '#ff5a5a');
-          } else if (roll === 1) {
-            this.haste = 20;
-            this.hud.announce('Святилище спешки: скорость и перезарядка', '#3ef0ff');
-          } else if (roll === 2) {
-            for (let i = 0; i < this.gems.n; i++) this.gems.f.mag[i] = 1;
-            this.hud.announce('Святилище жадности: весь опыт к тебе', '#c46bff');
-          } else {
-            this.conduit = 15;
-            this.hud.announce('Святилище-проводник: молнии 15 секунд', '#3ef0ff');
-          }
+          this.sfx.shrine();
+          this.shrineBuff((Math.random() * 4) | 0);
           this.impact(p.x, p.y, COL.gold, PX * 5);
           this.flash(p.x, p.y, 260, 1.4, COL.gold, 0.5);
           break;
         }
       }
+    }
+  }
+
+  private shrineBuff(roll: number) {
+    if (roll === 0) {
+      this.rage = 20;
+      this.hud.announce('Святилище ярости: урон +60%', '#ff5a5a');
+    } else if (roll === 1) {
+      this.haste = 20;
+      this.hud.announce('Святилище спешки: скорость и перезарядка', '#3ef0ff');
+    } else if (roll === 2) {
+      for (let i = 0; i < this.gems.n; i++) this.gems.f.mag[i] = 1;
+      this.hud.announce('Святилище жадности: весь опыт к тебе', '#c46bff');
+    } else {
+      this.conduit = 15;
+      this.hud.announce('Святилище-проводник: молнии 15 секунд', '#3ef0ff');
     }
   }
 
@@ -2054,7 +2364,9 @@ export class Game {
   private equip(g: Gear) {
     const oldMax = this.stats.maxHp;
     this.gear[g.slot] = g;
-    this.stats = computeStats(this.gear, this.meta);
+    if (g.rarity === 3) this.run.legends++;
+    this.legs = new Set(this.gear.map((x) => x?.leg ?? '').filter(Boolean));
+    this.stats = this.calcStats();
     if (this.stats.maxHp > oldMax) this.heal(this.stats.maxHp - oldMax);
     this.hp = Math.min(this.hp, this.stats.maxHp);
     this.refreshSlots();
@@ -2063,7 +2375,7 @@ export class Game {
   private refreshSlots() {
     this.hud.setSlots(
       this.weapons.map((w) => ({ tag: w.def.tag, css: SCHOOLS[w.def.school].css, level: w.level, evolved: w.evolved })),
-      this.gear.map((g, k) => ({ glyph: GEAR_GLYPH[k], filled: !!g })),
+      this.gear.map((g, k) => ({ glyph: GEAR_GLYPH[k], filled: !!g, css: g ? RARITY[g.rarity].css : '' })),
     );
   }
 
@@ -2081,7 +2393,8 @@ export class Game {
 
   private openLevelUp() {
     const resolving = this.level - this.pending + 1;
-    if (resolving % 5 === 0) this.openGear(false);
+    this.sfx.levelup();
+    if (resolving % 5 === 0) this.openGear('level');
     else this.openWeapons();
   }
 
@@ -2101,6 +2414,7 @@ export class Game {
         act: () => {
           evo.evolved = true;
           this.run.evolutions++;
+          this.sfx.evolve();
           this.impact(this.px, this.py, COL.gold, PX * 6);
           this.flash(this.px, this.py, 320, 1.5, COL.gold, 0.5);
           this.addShake(8);
@@ -2135,9 +2449,16 @@ export class Game {
     this.present('Новый уровень', 'Выбери модуль', opts, false);
   }
 
-  private openGear(fromChest: boolean) {
+  private openGear(src: 'level' | 'chest' | 'legend') {
+    const fromChest = src !== 'level';
     const owned = [...new Set(this.weapons.map((w) => SCHOOLS[w.def.school].elem))];
-    let items = [rollGear(owned), rollGear(owned), rollGear(owned)];
+    const table = src === 'legend' ? DROP_LEGEND : src === 'chest' ? DROP_CHEST : DROP_LEVELUP;
+    const roll = () => {
+      const out = [0, 1, 2].map(() => rollGear(owned, rollRarity(table, this.T.legend)));
+      if (src === 'legend' && !out.some((g) => g.rarity === 3)) out[0] = rollGear(owned, 3);
+      return out;
+    };
+    let items = roll();
 
     const show = () => {
       const opts: Option[] = items.map((g) => {
@@ -2151,24 +2472,25 @@ export class Game {
         );
         return {
           card: {
-            kicker: GEAR_SLOTS[g.slot],
+            kicker: `${GEAR_SLOTS[g.slot]} · ${RARITY[g.rarity].name}`,
             title: g.name,
-            lines: g.stats.map(statText),
+            lines: [...g.stats.map(statText), ...(g.leg ? [`★ ${legendById(g.leg)?.desc ?? ''}`] : [])],
             note: unlock ? `Откроет компиляцию ${unlock.def.evo.name}` : cur ? `Заменит: ${cur.name}` : 'Пустой слот',
             gold: !!unlock,
+            rarity: g.rarity,
           },
           act: () => this.equip(g),
         };
       });
       this.present(
-        fromChest ? 'Сундук' : 'Снаряжение',
+        src === 'legend' ? 'Легендарный сундук' : fromChest ? 'Сундук' : 'Снаряжение',
         'Выбери имплант',
         opts,
         fromChest,
         this.rerolls > 0
           ? () => {
               this.rerolls--;
-              items = [rollGear(owned), rollGear(owned), rollGear(owned)];
+              items = roll();
               show();
             }
           : undefined,
@@ -2201,7 +2523,7 @@ export class Game {
   private render() {
     const w = this.app.screen.width;
     const h = this.app.screen.height;
-    const P = Math.max(2, Math.min(5, Math.round((Math.min(w, h) / 560) * PX)));
+    const P = Math.max(2, Math.min(5, (Math.min(w, h) / 560) * PX));
     this.zoom = P / PX;
     const z = this.zoom;
     this.viewHW = w / 2 / z;
@@ -2219,7 +2541,7 @@ export class Game {
     this.world.position.set(wx, wy);
     this.bg.width = w;
     this.bg.height = h;
-    this.bg.tileScale.set(P);
+    this.bg.tileScale.set((P * 48) / tex.GROUND_SIZE);
     this.bg.tilePosition.set(wx, wy);
     this.fog.width = w;
     this.fog.height = h;
@@ -2495,6 +2817,6 @@ export class Game {
     }
 
     this.hud.setDash(Math.max(0, this.dashCd / CFG.dash.cooldown));
-    this.hud.update(this.level, this.time, this.kills, this.xp / this.need, this.L.bossAt);
+    this.hud.update(this.level, this.time, this.kills, this.xp / this.need, this.bossSpawned ? -1 : this.nextBoss, this.run.shards);
   }
 }

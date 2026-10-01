@@ -41,6 +41,10 @@ export const BODY: Record<string, { a: string[]; b: string[] }> = {
     a: ["................", "......kkkk......", ".....kmwwmk.....", ".....kmmmmk.....", ".....kkeekk....w", "....kkmmmmkk..kw", "..kkkbmwwmbk.kw.", ".kmmkbbmmbbkkwk.", ".kmrmkbbbbkmak..", ".kmrmkbbbbkkk...", ".kmmkbbbbbbk....", "..kk.kmkkmk.....", ".....kmk.kmk....", ".....kmk.kmk....", "....kkkk.kkkk...", "................"],
     b: ["................", "......kkkk......", ".....kmwwmk.....", ".....kmmmmk.....", ".....kkeekk....w", "....kkmmmmkk..kw", "..kkkbmwwmbk.kw.", ".kmmkbbmmbbkkwk.", ".kmrmkbbbbkmak..", ".kmrmkbbbbkkk...", ".kmmkbbbbbbk....", "..kk.kmkkmk.....", "....kmk...kmk...", "....kmk...kmk...", "...kkkk...kkkk..", "................"],
   },
+  goblin: {
+    a: ["................", "..kkkk..........", ".kbBBbk.........", "kbBBBBbk.kkk....", "kbBrBBbkkaAAk.k.", "kbBBBBbkaAeAkak.", "kbBBBBbkaAAAAk..", "kbbBBbbkkaAAk...", ".kbbbbkaAAAk....", "..kkkkaArAAk....", ".....kaAAAAk....", ".....kaaaak.....", ".....kak.kak....", ".....kak.kak....", "....kkk..kkk....", "................"],
+    b: ["................", "..kkkk..........", ".kbBBbk.........", "kbBBBBbk.kkk....", "kbBrBBbkkaAAk.k.", "kbBBBBbkaAeAkak.", "kbBBBBbkaAAAAk..", "kbbBBbbkkaAAk...", ".kbbbbkaAAAk....", "..kkkkaArAAk....", ".....kaAAAAk....", ".....kaaaak.....", "......kakak.....", "......kakak.....", ".....kkkkkk.....", "................"],
+  },
 };
 
 export const PROP: Record<string, string[]> = {

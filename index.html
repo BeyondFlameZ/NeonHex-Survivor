@@ -7,11 +7,14 @@
     <meta name="mobile-web-app-capable" content="yes" />
     <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent" />
     <meta name="apple-mobile-web-app-title" content="Neon Hex" />
+    <link rel="manifest" href="/manifest.webmanifest" />
+    <link rel="apple-touch-icon" href="/icons/apple-touch-icon.png" />
+    <link rel="icon" type="image/png" href="/icons/icon-192.png" />
     <meta name="theme-color" content="#07050a" />
     <title>Neon Hex</title>
     <link rel="preconnect" href="https://fonts.googleapis.com" />
     <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
-    <link href="https://fonts.googleapis.com/css2?family=Cormorant+SC:wght@600;700&family=Pixelify+Sans:wght@400;600;700&display=swap" rel="stylesheet" />
+    <link href="https://fonts.googleapis.com/css2?family=Cormorant+SC:wght@600;700&family=Exo+2:wght@400;600;800&display=swap" rel="stylesheet" />
   </head>
   <body>
     <div id="stage"></div>
@@ -24,7 +27,7 @@
             <span id="time"></span>
             <span id="boss-timer"></span>
           </div>
-          <span id="kills"></span>
+          <span class="right-box"><span id="kills"></span><span id="run-shards"></span></span>
         </div>
         <div class="xp"><div id="xp-fill"></div></div>
         <div class="slots">
@@ -58,8 +61,9 @@
     </div>
 
     <div id="pause" class="overlay" hidden>
-      <div class="panel narrow">
+      <div class="panel wide">
         <h2 class="title gold">Пауза</h2>
+        <div id="pause-build" class="build"></div>
         <div class="btn-col">
           <button id="p-resume" class="btn primary">Продолжить</button>
           <button id="p-restart" class="btn">Начать заново</button>

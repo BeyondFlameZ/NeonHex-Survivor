@@ -14,6 +14,7 @@ export const B = {
   SPIT: 9,
   TANK: 10,
   BOSS: 11,
+  FLEE: 12,
 } as const;
 
 export const BEH_NAME = [
@@ -29,6 +30,7 @@ export const BEH_NAME = [
   'Плюётся кислотой',
   'Живучий танк',
   'Босс',
+  'Убегает с добычей',
 ];
 
 // [основной, вторичный, глаза, акцент]
@@ -109,6 +111,20 @@ const pp = (a: string, A: string, e: string, r: string, b = '#2a2a38', B = '#3a3
 export const UNLOCK_AT = [0, 25, 60, 100, 140, 190, 240, 300, 360];
 export const WEIGHT = [10, 6, 5, 5, 4, 3, 3, 3, 3];
 export const ELITE_AT = [150, 300, 420];
+
+// гоблин-майнер общий для всех локаций: убегает, при ударах роняет осколки, при смерти — легендарный сундук
+export const GOBLIN: EnemyDef = {
+  name: 'Гоблин-майнер',
+  body: 'goblin',
+  pal: ['#7aa84a', '#a8823a', '#ffe14a', '#ffc94a'],
+  beh: B.FLEE,
+  hp: 30,
+  spd: 115,
+  dmg: 0,
+  r: 11,
+  xp: 10,
+  kbr: 0.4,
+};
 
 export const LEVELS: LevelDef[] = [
   {

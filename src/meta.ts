@@ -1,4 +1,6 @@
+import { CLASSES } from './classes';
 import { levelChallenges, LEVELS } from './levels';
+import { TIERS, todayKey } from './modes';
 import { saveProfile, type Profile, type RunResult } from './save';
 
 export interface ShopItem {
@@ -78,20 +80,31 @@ export const ACHIEVEMENTS: Achievement[] = [
   { id: 'chest', name: 'Кладоискатель', desc: 'Открой 10 сундуков', reward: 100, check: (p) => p.life.chests >= 10 },
   { id: 'boss5', name: 'Цареубийца', desc: 'Убей 5 боссов', reward: 300, check: (p) => p.life.bosses >= 5 },
   { id: 'rich', name: 'Магнат', desc: 'Заработай 3000 осколков за всё время', reward: 200, check: (p) => p.earned >= 3000 },
+  { id: 'nm', name: 'Кошмарный сон', desc: 'Пройди любую локацию на сложности «Кошмар»', reward: 400, check: (p) => p.tierWon.some((t) => t[1]) },
+  { id: 'hell', name: 'Сошествие в ад', desc: 'Пройди любую локацию на сложности «Ад»', reward: 800, check: (p) => p.tierWon.some((t) => t[2]) },
+  { id: 'hellall', name: 'Владыка Ада', desc: 'Пройди все 5 локаций на «Аде»', reward: 3000, check: (p) => p.tierWon.every((t) => t[2]) },
+  { id: 'goblin', name: 'Гоблинобой', desc: 'Убей 5 гоблинов-майнеров', reward: 200, check: (p) => p.life.goblins >= 5 },
+  { id: 'legend', name: 'Легенда', desc: 'Надень легендарный предмет', reward: 150, check: (p) => p.life.legends >= 1 },
+  { id: 'endless', name: 'Бесконечность', desc: 'Продержись 20 минут в бесконечном режиме', reward: 600, check: (_p, r) => r.endless && r.time >= 1200 },
+  { id: 'daily3', name: 'Ежедневник', desc: 'Пройди 3 испытания дня', reward: 300, check: (p) => p.daily.count >= 3 },
+  { id: 'classes', name: 'Многоликий', desc: 'Победи тремя разными классами', reward: 400, check: (p) => p.classWins.length >= 3 },
 ];
 
 export interface Settlement {
   base: number;
   starShards: number;
+  dailyBonus: number;
   newStars: string[];
   newAch: Achievement[];
   total: number;
-  unlocked: string | null;
+  unlockedLevel: string | null;
+  unlockedClass: string | null;
+  newBest: boolean;
 }
 
-// итог забега: осколки, звёзды, достижения; профиль сохраняется
+// итог забега: осколки, звёзды, режимы, достижения; профиль сохраняется
 export function settle(p: Profile, r: RunResult): Settlement {
-  const L = LEVELS[r.level];
+  const T = TIERS[r.tier] ?? TIERS[0];
   p.life.kills += r.kills;
   p.life.runs++;
   p.life.crits += r.crits;
@@ -99,16 +112,33 @@ export function settle(p: Profile, r: RunResult): Settlement {
   p.life.shrines += r.shrines;
   p.life.chests += r.chests;
   p.life.time += r.time;
-  if (r.won) p.life.bosses++;
+  p.life.bosses += r.bosses;
+  p.life.goblins += r.goblins;
+  p.life.legends += r.legends;
   for (const w of r.weapons) if (!p.used.includes(w)) p.used.push(w);
 
-  let unlocked: string | null = null;
-  if (r.won && !p.won[r.level]) {
-    p.won[r.level] = true;
-    unlocked = L.unlock;
+  let unlockedLevel: string | null = null;
+  let unlockedClass: string | null = null;
+  if (r.won) {
+    if (!p.won[r.level]) {
+      p.won[r.level] = true;
+      if (r.level + 1 < LEVELS.length) unlockedLevel = LEVELS[r.level + 1].name;
+      const c = CLASSES[r.level + 1];
+      if (c) unlockedClass = c.name;
+    }
+    p.tierWon[r.level][r.tier] = true;
+    if (!p.classWins.includes(r.cls)) p.classWins.push(r.cls);
   }
 
-  const base = Math.round(r.kills * 0.1 + (r.time / 60) * 6 + (r.won ? 150 * (r.level + 1) : 0));
+  let newBest = false;
+  if (r.endless && r.time > p.best[r.level]) {
+    p.best[r.level] = r.time;
+    newBest = true;
+  }
+
+  const raw = r.kills * 0.1 + (r.time / 60) * 6 + (r.won ? 150 * (r.level + 1) : 0) + r.bosses * 100 * (r.endless ? 1 : 0) + r.shards;
+  const base = Math.round(raw * T.reward);
+
   let starShards = 0;
   const newStars: string[] = [];
   levelChallenges(r.level).forEach((c, i) => {
@@ -119,8 +149,21 @@ export function settle(p: Profile, r: RunResult): Settlement {
     }
   });
 
-  p.shards += base + starShards;
-  p.earned += base + starShards;
+  let dailyBonus = 0;
+  if (r.daily) {
+    const today = todayKey();
+    if (p.daily.key !== today) p.daily = { key: today, done: false, best: 0, count: p.daily.count };
+    p.daily.best = Math.max(p.daily.best, r.kills);
+    if (r.won && !p.daily.done) {
+      p.daily.done = true;
+      p.daily.count++;
+      dailyBonus = 400;
+    }
+  }
+
+  const gained = base + starShards + dailyBonus;
+  p.shards += gained;
+  p.earned += gained;
 
   const newAch: Achievement[] = [];
   for (const a of ACHIEVEMENTS) {
@@ -132,15 +175,7 @@ export function settle(p: Profile, r: RunResult): Settlement {
   }
 
   saveProfile(p);
-  const total = base + starShards + newAch.reduce((s, a) => s + a.reward, 0);
-  return { base, starShards, newStars, newAch, total, unlocked };
+  const total = gained + newAch.reduce((acc, a) => acc + a.reward, 0);
+  return { base, starShards, dailyBonus, newStars, newAch, total, unlockedLevel, unlockedClass, newBest };
 }
 
-// стартовые скрипты: bolt всегда, остальные открываются победами на уровнях
-export function startOptions(p: Profile) {
-  const out = ['bolt'];
-  LEVELS.forEach((L, i) => {
-    if (p.won[i]) out.push(L.unlock);
-  });
-  return out;
-}
