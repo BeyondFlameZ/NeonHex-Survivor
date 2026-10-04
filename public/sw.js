@@ -1,5 +1,5 @@
 // Сначала сеть, кэш — запасной вариант: обновления приходят сразу, а без интернета игра всё равно запускается.
-const CACHE = 'neonhex-v1';
+const CACHE = 'neonhex-v2';
 
 self.addEventListener('install', () => self.skipWaiting());
 

@@ -7,84 +7,86 @@
     <meta name="mobile-web-app-capable" content="yes" />
     <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent" />
     <meta name="apple-mobile-web-app-title" content="Neon Hex" />
+    <meta name="theme-color" content="#0b1424" />
     <link rel="manifest" href="/manifest.webmanifest" />
     <link rel="apple-touch-icon" href="/icons/apple-touch-icon.png" />
     <link rel="icon" type="image/png" href="/icons/icon-192.png" />
-    <meta name="theme-color" content="#07050a" />
     <title>Neon Hex</title>
   </head>
   <body>
-    <div id="stage"></div>
+    <canvas id="c"></canvas>
 
     <div id="run-ui" hidden>
-      <div id="hud">
-        <div class="hud-top">
-          <span id="lvl"></span>
-          <div class="time-box">
-            <span id="time"></span>
-            <span id="boss-timer"></span>
-          </div>
-          <span class="right-box"><span id="kills"></span><span id="run-shards"></span></span>
-        </div>
-        <div class="xp"><div id="xp-fill"></div></div>
-        <div class="slots">
-          <div id="wslots" class="slot-row"></div>
-          <div id="gslots" class="slot-row"></div>
+      <div id="touch"></div>
+      <div id="joy"><div id="joy-knob"></div></div>
+
+      <div class="hud-tl">
+        <div id="hud-hero" class="hud-hero">В</div>
+        <div class="hud-bars">
+          <div class="hud-row"><span id="hud-lvl" class="hud-lvl">Уровень 1</span><span class="hud-coins">⬢ <b id="hud-coins">0</b></span></div>
+          <div class="bar hp"><div id="hp-fill"></div><span id="hp-text"></span></div>
         </div>
       </div>
 
-      <div id="bossbar" hidden>
-        <div id="boss-name"></div>
-        <div class="boss-frame"><div id="boss-fill"></div></div>
+      <div class="hud-tc">
+        <div class="hud-timer"><span class="clock">◷</span><span id="hud-time">12:00</span><span id="hud-phase" class="phase">Фаза 1</span></div>
       </div>
-
-      <div id="riftbar" hidden>
-        <div class="rift-frame"><div id="rift-fill"></div></div>
-        <div id="rift-time"></div>
-      </div>
-
-      <div id="banner"></div>
-
       <button id="pausebtn" class="icon-btn" aria-label="Пауза">II</button>
-      <button id="dash" class="dash ready" aria-label="Рывок"><span>Рывок</span></button>
-      <button id="ult" class="ult" aria-label="Ульта"><span>Ульта</span></button>
-    </div>
 
-    <div id="levelup" class="overlay" hidden>
-      <div class="panel">
-        <div class="panel-head">
-          <div>
-            <h2 id="lu-title" class="title gold">Новый уровень</h2>
-            <p id="lu-sub" class="sub">Выбери модуль</p>
-          </div>
-          <button id="reroll" class="btn small" hidden>Реролл</button>
-        </div>
-        <div id="choices"></div>
+      <div id="bossbar" hidden><div id="boss-name"></div><div class="boss-frame"><div id="boss-fill"></div></div></div>
+      <div id="banner"></div>
+      <div id="markers"></div>
+
+      <div class="inv">
+        <div class="inv-rows"><div id="inv-imp" class="inv-row"></div><div id="inv-proto" class="inv-row proto"></div></div>
+        <div class="bar xp"><div id="xp-fill"></div></div>
+      </div>
+
+      <div class="controls">
+        <button id="btn-auto" class="ctl small on">АВТО</button>
+        <button id="btn-skill" class="ctl skill ready"><span>✦</span></button>
+        <button id="btn-dodge" class="ctl dodge"><span>»</span></button>
+        <div id="aim" class="aim"><div id="aim-knob"></div></div>
       </div>
     </div>
 
-    <div id="pause" class="overlay" hidden>
-      <div class="panel wide">
-        <h2 class="title gold">Пауза</h2>
-        <div id="pause-build" class="build"></div>
-        <div class="btn-col">
-          <button id="p-resume" class="btn primary">Продолжить</button>
-          <button id="p-restart" class="btn">Начать заново</button>
-          <button id="p-quit" class="btn ghost">Сдаться и выйти</button>
+    <div id="choice" class="overlay dim" hidden>
+      <div class="choice-wrap">
+        <div id="choice-title" class="choice-title">Выберите 1 предмет</div>
+        <div id="choice-timer" class="choice-timer">30</div>
+        <div id="choice-cards" class="cards"></div>
+        <div class="choice-btns">
+          <button id="ch-skip" class="btn ghost"></button>
+          <button id="ch-banish" class="btn ghost"></button>
+          <button id="ch-refresh" class="btn ghost"></button>
+          <button id="ch-confirm" class="btn blue">ПОДТВЕРДИТЬ</button>
         </div>
       </div>
     </div>
 
-    <div id="results" class="overlay" hidden>
-      <div id="results-body" class="panel narrow"></div>
+    <div id="pause" class="overlay dim" hidden>
+      <div class="panel narrow">
+        <div class="screen-title">Пауза</div>
+        <button id="p-resume" class="btn primary">ПРОДОЛЖИТЬ</button>
+        <button id="p-quit" class="btn ghost">ЗАВЕРШИТЬ ЗАБЕГ</button>
+      </div>
     </div>
+
+    <div id="results" class="overlay dim" hidden><div id="results-body" class="panel narrow"></div></div>
 
     <div id="menu" hidden>
-      <div class="embers"></div>
-      <div class="menu-top"><span id="menu-shards" class="shards"></span></div>
+      <div class="topbar">
+        <button id="top-home" class="icon-btn back" aria-label="Назад">‹</button>
+        <div class="brand">NEON HEX</div>
+        <div id="top-pass" class="pass-badge">Пропуск · 0</div>
+        <div class="spacer"></div>
+        <div class="cur"><span class="cur-i">⬡</span><b id="top-credits">0</b></div>
+        <div class="cur prem"><span class="cur-i">✦</span><b id="top-cores">0</b></div>
+        <button id="top-settings" class="icon-btn" aria-label="Настройки">⚙</button>
+      </div>
       <div id="menu-body"></div>
     </div>
 
-    <script type="module" src="./src/main.ts"></script>
+    <script type="module" src="/src/main.ts"></script>
   </body>
 </html>

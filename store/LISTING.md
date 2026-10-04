@@ -8,61 +8,55 @@ Neon Hex
 Если имя занято: **Neon Hex: Кибермаги** / **Neon Hex: Cyber Mages**
 
 ## Подзаголовок App Store (до 30)
-RU: Рогалик против орд Бездны
-EN: Roguelike vs the Abyss hordes
+RU: 3D-выживание против Бездны
+EN: 3D survival vs the Abyss
 
 ## Краткое описание Google Play (до 80)
-RU: Кибермаг против тысяч монстров. 24 заклинания-скрипта, боссы и порталы.
-EN: A cyber-mage vs thousands of monsters. 24 spell scripts, bosses and rifts.
+RU: Шесть кибермагов против орд Бездны. Импланты, протоколы, боссы.
+EN: Six cyber-mages vs the Abyss hordes. Implants, protocols, bosses.
 
 ## Рекламный текст App Store (до 170)
-RU: Пять проклятых локаций, 24 оружия-скрипта с компиляцией, легендарный лут и бесконечные Великие порталы. Без рекламы и интернета.
-EN: Five cursed zones, 24 spell scripts that evolve, legendary loot and endless Greater Rifts. No ads, no internet needed.
+RU: Мультяшный 3D-экшен: выбери кибермага, собирай сеты имплантов и выживи 12 минут против орд и боссов. Без рекламы и интернета.
+EN: Cartoon 3D action: pick a cyber-mage, build implant sets and survive 12 minutes of hordes and bosses. No ads, no internet needed.
 
 ## Полное описание — RU (до 4000)
-Корпорация пыталась взломать ад — и ад взломал её в ответ. Мёртвые встали, демоны вышли из плавильных печей, а ты — кибермаг, чей код ещё работает.
+Корпорация пыталась взломать ад — и ад взломал её в ответ. Мёртвые встали, демоны вышли из плавильных печей, а шесть кибермагов — последние, чей код ещё работает.
 
-Neon Hex — экшен-рогалик в духе «выживи против орды» с мрачной атмосферой классических дьяблоидов и объёмной пиксельной графикой.
+Neon Hex — мультяшный 3D-экшен в жанре «выживи против орды». Управление двумя стиками, автострельба, 12 минут на забег, три фазы и финальный босс.
 
-• 6 школ магии и 24 оружия-скрипта: молнии, огонь, лёд, некрокод, механика и глитч. Каждое прокачивается до 8 уровня и компилируется в легендарную форму.
-• Слияния школ: Плазма, Термошок, Вирусный фантом и другие скрытые комбинации.
-• 5 локаций и 45 видов врагов: стрелки, тараны, взрывающиеся, призыватели, лекари, телепортёры.
-• 5 боссов с фазой ярости и элита с аффиксами: Огненный, Морозный, Защищённый, Кровососущий…
-• Лут как в дьяблоидах: обычный, магический, редкий и 12 легендарных предметов, меняющих игру.
-• 6 классов магов со своими ультами и стартовым оружием.
-• Сложности «Кошмар» и «Ад», бесконечный режим, ежедневное испытание.
-• Великие порталы — бесконечная лестница сложности со стражами.
-• Доска парагона, реликвии с камнями, мастерская вечных улучшений.
-• 38 достижений, бестиарий с лором, 7 обликов мага.
+• 6 героев: Вольт, Эмбер, Иней, Гниль, Шестерня и Глюк. У каждого своё оружие, умение и пассивка.
+• Таланты: дерево 5×3 у каждого героя, прокачка до 10 уровня.
+• Импланты: части Верх, Центр и Низ разных героев. Собери сет из 2 или 3 частей — получишь мощные бонусы.
+• Протоколы: 22 карты с тегами «Урон», «Стихия», «Выживание», «Подвижность» и рискованным «Штрафом».
+• Выбор 1 из 5 на каждом уровне: пропусти, убери ненужное или обнови за монеты.
+• 5 локаций, 45 видов врагов, 5 боссов с фазой ярости, элита с аффиксами, гоблин-майнер с добычей.
+• Сложности «Кошмар» и «Ад», задания дня, боевой пропуск на 30 уровней, справочник.
 • Процедурная музыка и звук для каждой локации, вибро-отдача.
 
-Без рекламы, без доната, без интернета. Просто ты, твой код и Бездна.
+Без рекламы и без интернета. Только ты, твой код и Бездна.
 
 ## Full description — EN (up to 4000)
-The corporation tried to hack hell — and hell hacked back. The dead rose, demons crawled out of the smelting furnaces, and you are a cyber-mage whose code still runs.
+The corporation tried to hack hell — and hell hacked back. The dead rose, demons crawled out of the furnaces, and six cyber-mages are the last ones whose code still runs.
 
-Neon Hex is a horde-survival action roguelike with the grim atmosphere of classic ARPGs and volumetric pixel art.
+Neon Hex is a cartoon 3D horde-survival action game. Twin-stick controls, auto-fire, 12-minute runs, three phases and a final boss.
 
-• 6 schools and 24 spell scripts: lightning, fire, ice, necrocode, mechs and glitch. Level each to 8 and compile it into a legendary form.
-• School fusions: Plasma, Thermal Shock, Viral Phantom and more hidden combos.
-• 5 zones and 45 enemy types: archers, chargers, exploders, summoners, healers, blinkers.
-• 5 bosses with enrage phases and elites with affixes: Fiery, Frozen, Shielded, Vampiric…
-• ARPG loot: common, magic, rare and 12 game-changing legendaries.
-• 6 mage classes, each with its own ultimate and starting weapon.
-• Nightmare and Hell difficulties, endless mode, daily challenge.
-• Greater Rifts — an endless difficulty ladder with guardians.
-• Paragon board, relics with gems, permanent workshop upgrades.
-• 38 achievements, a bestiary with lore, 7 mage skins.
+• 6 heroes: Volt, Ember, Frost, Rot, Gear and Glitch — each with a unique weapon, skill and passive.
+• Talents: a 5×3 tree per hero, hero levels up to 10.
+• Implants: Top, Middle and Bottom pieces of different heroes. Complete 2- or 3-piece sets for powerful bonuses.
+• Protocols: 22 cards tagged Damage, Element, Survival, Mobility — and risky Penalty cards.
+• Pick 1 of 5 on every level-up: skip, banish unwanted cards or reroll with coins.
+• 5 zones, 45 enemy types, 5 enraging bosses, affixed elites and a loot goblin.
+• Nightmare and Hell difficulties, daily quests, a 30-level battle pass and a codex.
 • Procedural music and sound for every zone, haptic feedback.
 
-No ads, no in-app purchases, no internet required. Just you, your code and the Abyss.
+No ads, no internet required. Just you, your code and the Abyss.
 
 ## Ключевые слова App Store (до 100, через запятую без пробелов)
-RU: рогалик,выживание,орда,маг,пиксель,дьябло,экшен,рпг,монстры,зомби,боссы,лут,офлайн,roguelike
-EN: roguelike,survivor,horde,mage,pixel,arpg,action,rpg,monsters,zombie,boss,loot,offline,bullet
+RU: выживание,орда,маг,3д,экшен,рогалик,герои,импланты,монстры,зомби,боссы,офлайн,стрелялка
+EN: survivor,horde,mage,3d,action,roguelike,heroes,implants,monsters,zombie,boss,offline,shooter
 
 ## Категории
-- App Store: основная **Игры → Ролевые**, дополнительная **Игры → Экшен**
+- App Store: основная **Игры → Экшен**, дополнительная **Игры → Ролевые**
 - Google Play: **Игры → Ролевые** (или Экшен)
 
 ## Ссылки

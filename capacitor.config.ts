@@ -5,20 +5,20 @@ const config: CapacitorConfig = {
   appId: 'com.beyondflamez.neonhex',
   appName: 'Neon Hex',
   webDir: 'dist',
-  backgroundColor: '#07050a',
+  backgroundColor: '#0b1424',
   ios: {
     contentInset: 'never',
     scrollEnabled: false,
-    backgroundColor: '#07050a',
+    backgroundColor: '#0b1424',
   },
   android: {
-    backgroundColor: '#07050a',
+    backgroundColor: '#0b1424',
   },
   plugins: {
     SplashScreen: {
       launchShowDuration: 900,
       launchAutoHide: true,
-      backgroundColor: '#07050a',
+      backgroundColor: '#0b1424',
       showSpinner: false,
     },
   },

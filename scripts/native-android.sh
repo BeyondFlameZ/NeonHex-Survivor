@@ -5,8 +5,8 @@ APP_ID=com.beyondflamez.neonhex
 [ -d android ] || npx cap add android
 npx cap sync android
 npx @capacitor/assets generate --android \
-  --iconBackgroundColor '#07050a' --iconBackgroundColorDark '#07050a' \
-  --splashBackgroundColor '#07050a' --splashBackgroundColorDark '#07050a'
+  --iconBackgroundColor '#0b1424' --iconBackgroundColorDark '#0b1424' \
+  --splashBackgroundColor '#0b1424' --splashBackgroundColorDark '#0b1424'
 
 VERSION_NAME=$(node -p "require('./package.json').version")
 GRADLE=android/app/build.gradle

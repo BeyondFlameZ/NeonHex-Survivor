@@ -4,7 +4,7 @@ set -euo pipefail
 [ -d ios ] || npx cap add ios
 npx cap sync ios
 npx @capacitor/assets generate --ios \
-  --iconBackgroundColor '#07050a' --splashBackgroundColor '#07050a' --splashBackgroundColorDark '#07050a'
+  --iconBackgroundColor '#0b1424' --splashBackgroundColor '#0b1424' --splashBackgroundColorDark '#0b1424'
 
 PL=ios/App/App/Info.plist
 set_bool() {
